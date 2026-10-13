@@ -1,0 +1,161 @@
+name: backup-upstream
+
+# 轨道 A：原版 HiDeck 镜像保全（多架构 Manifest 级拷贝，不重编译）。
+# 目的：上游 Docker Hub / GitHub 删除后，仍可从个人 GHCR 拉取与官方逐字节一致的原版镜像。
+# 仅手动触发；默认拒绝覆盖已存在且摘要不同的备份。
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_image:
+        description: "上游原版镜像引用（默认 2.1.23）"
+        required: true
+        default: "docker.io/yibaiba/hideck:2.1.23"
+      target_tag:
+        description: "GHCR 目标标签"
+        required: true
+        default: "upstream-2.1.23"
+      force:
+        description: "目标已存在且摘要不同时是否强制覆盖（true/false）"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: backup-upstream
+  cancel-in-progress: false
+
+jobs:
+  preserve:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_IMAGE: ghcr.io/${{ github.repository_owner }}/hideck
+    steps:
+      - name: Check source image exists and capture manifest
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="${{ inputs.source_image }}"
+          if ! docker buildx imagetools inspect "$SRC" > source-inspect.txt 2> source-inspect.err; then
+            echo "::error::源镜像不存在或不可访问：$SRC"
+            cat source-inspect.err || true
+            echo "STOP: 原版镜像已不存在，本轨道按设计停止，禁止用其它版本冒充 2.1.23。"
+            exit 1
+          fi
+          cat source-inspect.txt
+          SOURCE_DIGEST="$(docker buildx imagetools inspect "$SRC" --format '{{json .Manifest}}' | jq -r '.digest')"
+          echo "source_digest=${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "SOURCE_DIGEST=${SOURCE_DIGEST}"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check existing target tag
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${TARGET_IMAGE}:${{ inputs.target_tag }}"
+          if docker buildx imagetools inspect "$TARGET" > target-inspect.txt 2>/dev/null; then
+            EXISTING_DIGEST="$(docker buildx imagetools inspect "$TARGET" --format '{{json .Manifest}}' | jq -r '.digest')"
+            echo "存在目标标签，digest=${EXISTING_DIGEST}"
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "existing_digest=${EXISTING_DIGEST}" >> "${GITHUB_OUTPUT}"
+            if [ "${EXISTING_DIGEST}" = "${{ steps.source.outputs.source_digest }}" ]; then
+              echo "::notice::目标与源摘要一致，无需重复备份。"
+              echo "action=skip-same" >> "${GITHUB_OUTPUT}"
+            elif [ "${{ inputs.force }}" = "true" ]; then
+              echo "::warning::摘要不同且 force=true，将覆盖目标标签。"
+              echo "action=overwrite" >> "${GITHUB_OUTPUT}"
+            else
+              echo "::error::目标标签已存在且摘要不同（existing=${EXISTING_DIGEST}），默认拒绝覆盖。如确认需要覆盖请以 force=true 重新运行。"
+              exit 1
+            fi
+          else
+            echo "目标标签不存在，将新建。"
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+            echo "action=create" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Copy multi-arch manifest to GHCR
+        if: steps.existing.outputs.action != 'skip-same'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${TARGET_IMAGE}:${{ inputs.target_tag }}" \
+            "${{ inputs.source_image }}"
+
+      - name: Verify target and write evidence
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${TARGET_IMAGE}:${{ inputs.target_tag }}"
+          docker buildx imagetools inspect "$TARGET" | tee target-inspect.txt
+          TARGET_DIGEST="$(docker buildx imagetools inspect "$TARGET" --format '{{json .Manifest}}' | jq -r '.digest')"
+          echo "target_digest=${TARGET_DIGEST}" >> "${GITHUB_OUTPUT}"
+
+          SRC_DIGEST="${{ steps.source.outputs.source_digest }}"
+          if [ "${TARGET_DIGEST}" != "${SRC_DIGEST}" ]; then
+            echo "::warning::索引摘要不同（源=${SRC_DIGEST}，目标=${TARGET_DIGEST}），继续核对各平台清单摘要。"
+            SRC_PLATFORMS="$(docker buildx imagetools inspect "${{ inputs.source_image }}" --format '{{json .Manifest}}' | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)/\(.platform.variant // "")=\(.digest)"' | sort)"
+            TGT_PLATFORMS="$(docker buildx imagetools inspect "$TARGET" --format '{{json .Manifest}}' | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)/\(.platform.variant // "")=\(.digest)"' | sort)"
+            echo "源平台清单:"; echo "${SRC_PLATFORMS}"
+            echo "目标平台清单:"; echo "${TGT_PLATFORMS}"
+            if [ "${SRC_PLATFORMS}" != "${TGT_PLATFORMS}" ]; then
+              echo "::error::平台清单摘要不一致，保全校验失败。"
+              exit 1
+            fi
+            echo "::notice::索引摘要不同但各平台清单逐项一致，视为有效保全。"
+          else
+            echo "::notice::索引摘要一致，原版保全完成。"
+          fi
+
+          cat > preserve-evidence.json <<EOF
+          {
+            "preserved_at": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "actor": "${GITHUB_ACTOR}",
+            "run_url": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "source_image": "${{ inputs.source_image }}",
+            "source_index_digest": "${SRC_DIGEST}",
+            "target_image": "${TARGET}",
+            "target_index_digest": "${TARGET_DIGEST}"
+          }
+          EOF
+          cat preserve-evidence.json
+          {
+            echo "## 原版镜像保全结果"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 源镜像 | ${{ inputs.source_image }} |"
+            echo "| 源索引摘要 | ${SRC_DIGEST} |"
+            echo "| 目标镜像 | ${TARGET} |"
+            echo "| 目标索引摘要 | ${TARGET_DIGEST} |"
+            echo "| 时间 | $(date -u +'%Y-%m-%dT%H:%M:%SZ') |"
+            echo ""
+            echo "源镜像平台明细："
+            echo '```'
+            cat source-inspect.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-preserve-evidence
+          path: |
+            preserve-evidence.json
+            source-inspect.txt
+            target-inspect.txt
+          if-no-files-found: error
+          retention-days: 90

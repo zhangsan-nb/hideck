@@ -1,0 +1,131 @@
+name: build-fork
+
+# 轨道 B：Fork 自动构建并发布到个人 GHCR。
+# 标签约定：
+#   ghcr.io/<owner>/hideck:fork-main        （可变测试标签；不要用于正式部署）
+#   ghcr.io/<owner>/hideck:build-<SHA>      （按完整 Git Commit 固定，正式部署固定 Digest）
+# 构建失败不会推送任何镜像。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "pkg/**"
+      - "web/**"
+      - "third_party/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - "Dockerfile"
+      - "Dockerfile.github"
+      - "Dockerfile.release"
+      - "Dockerfile.runtime"
+      - ".github/workflows/build-fork.yml"
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "构建平台（默认仅 linux/amd64；源码与依赖支持时可加 arm64）"
+        required: true
+        default: "linux/amd64"
+      enable_upx:
+        description: "是否启用 UPX 压缩（true/false）"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-fork-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/hideck
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (仅多架构时)
+        if: ${{ contains(inputs.platforms, 'arm') || contains(inputs.platforms, 'ppc') || contains(inputs.platforms, 's390') || contains(inputs.platforms, 'riscv') }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare build metadata
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLATFORMS="${{ inputs.platforms }}"
+          if [ -z "${PLATFORMS}" ]; then PLATFORMS="linux/amd64"; fi
+          ENABLE_UPX_RAW="${{ inputs.enable_upx }}"
+          case "${ENABLE_UPX_RAW}" in
+            false|0|no|off|"") ENABLE_UPX=0 ;;
+            *) ENABLE_UPX=1 ;;
+          esac
+          VERSION="fork-${GITHUB_SHA::12}"
+          BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "platforms=${PLATFORMS}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "buildtime=${BUILDTIME}" >> "${GITHUB_OUTPUT}"
+          echo "enable_upx=${ENABLE_UPX}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.github
+          platforms: ${{ steps.vars.outputs.platforms }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:fork-main
+            ${{ env.IMAGE_REPO }}:build-${{ github.sha }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            BUILDTIME=${{ steps.vars.outputs.buildtime }}
+            REVISION=${{ github.sha }}
+            ENABLE_UPX=${{ steps.vars.outputs.enable_upx }}
+
+      - name: Write evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Fork 构建发布结果"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| 平台 | ${{ steps.vars.outputs.platforms }} |"
+            echo "| 可变标签 | \`${IMAGE_REPO}:fork-main\` |"
+            echo "| 固定标签 | \`${IMAGE_REPO}:build-${{ github.sha }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| 构建时间 | ${{ steps.vars.outputs.buildtime }} |"
+            echo "| UPX | ${{ steps.vars.outputs.enable_upx }} |"
+            echo ""
+            echo "> 正式部署请使用固定 Digest："
+            echo "> \`${IMAGE_REPO}@${{ steps.build.outputs.digest }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

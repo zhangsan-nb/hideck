@@ -1,0 +1,45 @@
+# 随行号（Suixinghao）× HiDeck 部署示例 — 使用个人 GHCR 备份镜像
+#
+# 说明：
+#   - 本文件仅作示例，不替代随行号仓库自带的 deploy/unraid/docker-compose.yml。
+#   - 与官方示例的唯一区别：image 改为个人 GHCR 保全的原版镜像。
+#   - 生产部署推荐把镜像固定到 Digest（见 docs/BACKUP_AND_RECOVERY.md「验证镜像 Digest」）。
+#
+# 使用前提（与随行号文档一致）：
+#   - 随行号目标 HiDeck 版本为 2.1.23，本镜像与官方逐字节一致（Manifest 级拷贝）。
+#   - 需要 host 网络与 /dev 透传（QDC507 串口/ADB 依赖）。
+#   - HiDeck 数据目录请继续沿用你现有的目录（不要换目录，避免丢历史短信库）。
+
+services:
+  hideck:
+    # 保全镜像（可变标签）：
+    image: ghcr.io/zhangsan-nb/hideck:upstream-2.1.23
+    # 生产固定写法（推荐，把 <DIGEST> 换成你自己的 GHCR 摘要，获取方法见文档）：
+    # image: ghcr.io/zhangsan-nb/hideck@sha256:<DIGEST>
+    container_name: hideck
+    network_mode: host
+    privileged: true
+    init: true
+    restart: unless-stopped
+    environment:
+      CONFIG_PATH: /app/config/config.yaml
+      TZ: Asia/Shanghai
+    volumes:
+      # 飞牛 FNOS 示例：HIDECK_DATA_DIR=/vol1/1000/docker/hideck
+      # Unraid 示例：  HIDECK_DATA_DIR=/mnt/user/appdata/hideck
+      - ${HIDECK_DATA_DIR:-/vol1/1000/docker/hideck}/config:/app/config
+      - ${HIDECK_DATA_DIR:-/vol1/1000/docker/hideck}/data:/app/data
+      - ${HIDECK_DATA_DIR:-/vol1/1000/docker/hideck}/logs:/app/logs
+      - /dev:/dev
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      # 随行号部署使用 server.port: 7577（与官方示例一致）
+      test: [CMD-SHELL, "wget -q -T 3 -O /dev/null http://127.0.0.1:7577/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
