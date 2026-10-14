@@ -87,8 +87,8 @@ func TestResolveSMSIdentityRejectsSIMSwapConflict(t *testing.T) {
 
 func TestProcessSMSSameHistoricalIMSIKeepsDeviceICCID(t *testing.T) {
 	store := &smsIdentityStoreStub{identities: map[string]SMSIdentity{
-		"dev-a": {ICCID: "card-a", IMSI: "shared-imsi"},
-		"dev-b": {ICCID: "card-b", IMSI: "shared-imsi"},
+		"dev-a": {ICCID: "898600123456f7890123", IMSI: "shared-imsi"},
+		"dev-b": {ICCID: "898600123457f7890123", IMSI: "shared-imsi"},
 	}}
 	pool := &Pool{workers: make(map[string]*Worker), smsIdentities: store}
 	for _, deviceID := range []string{"dev-a", "dev-b"} {
@@ -99,7 +99,7 @@ func TestProcessSMSSameHistoricalIMSIKeepsDeviceICCID(t *testing.T) {
 			t.Fatalf("%s processSMS() error=%v", deviceID, err)
 		}
 	}
-	if len(store.saved) != 2 || store.saved[0].identity.ICCID != "CARD-A" || store.saved[1].identity.ICCID != "CARD-B" {
+	if len(store.saved) != 2 || store.saved[0].identity.ICCID != "898600123456F7890123" || store.saved[1].identity.ICCID != "898600123457F7890123" {
 		t.Fatalf("saved identities=%+v", store.saved)
 	}
 }

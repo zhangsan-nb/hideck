@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/yibaiba/hideck/pkg/simidentity"
 )
 
 const automationStatePollInterval = 500 * time.Millisecond
@@ -74,5 +76,5 @@ func (p *Pool) SwitchESIMProfileAndWait(ctx context.Context, deviceID, iccid, ai
 }
 
 func normalizeAutomationICCID(value string) string {
-	return strings.TrimRight(strings.Trim(strings.TrimSpace(value), "\""), "Ff")
+	return simidentity.CanonicalICCID(value)
 }

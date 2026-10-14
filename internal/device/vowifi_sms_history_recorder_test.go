@@ -106,6 +106,45 @@ func TestVoWiFiSMSHistoryRecorderPersistsReceivedSMS(t *testing.T) {
 	}
 }
 
+func TestVoWiFiSMSHistoryRecorderKeepsCapturedSIMAfterProfileSwitch(t *testing.T) {
+	for _, multipart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "single", true: "multipart"}[multipart], func(t *testing.T) {
+			initDevicePhoneNumberTestDB(t)
+			const (
+				imsi     = "234150000000046"
+				oldICCID = "8944100000000000046"
+				newICCID = "8944100000000000047"
+			)
+			if err := db.UpsertSIMCardIdentity(oldICCID, imsi, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.UpsertSIMCardIdentity(newICCID, imsi, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			event := eventhost.SMSReceived{
+				DevID: "dev-switch", Sender: "+10086", Content: "captured identity",
+				Time: time.Date(2026, 10, 14, 13, 0, 0, 0, time.UTC),
+			}
+			if multipart {
+				event.FragmentSessionKey = "ref=46"
+			}
+			result, err := (vowifiSMSHistoryRecorder{}).recordReceived(event, SMSIdentity{
+				ICCID: oldICCID, IMSI: imsi,
+			})
+			if err != nil || !result.Stored {
+				t.Fatalf("recordReceived() result=%+v err=%v", result, err)
+			}
+			var stored db.SMS
+			if err := db.DB.Where("content = ?", event.Content).Take(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.ICCID != oldICCID {
+				t.Fatalf("stored ICCID=%q, want captured %q", stored.ICCID, oldICCID)
+			}
+		})
+	}
+}
+
 func TestVoWiFiSMSHistoryRecorderReconcilesDegradedMultipartSMS(t *testing.T) {
 	initDevicePhoneNumberTestDB(t)
 	const imsi = "imsi-vowifi-fragment"

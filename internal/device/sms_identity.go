@@ -144,9 +144,7 @@ func mergeSMSIdentities(runtime, stored smsIdentityCandidate) (SMSIdentity, erro
 }
 
 func normalizeSMSIdentity(identity SMSIdentity) SMSIdentity {
-	identity.ICCID = strings.ToUpper(strings.TrimSpace(identity.ICCID))
-	identity.ICCID = strings.ReplaceAll(identity.ICCID, " ", "")
-	identity.ICCID = strings.TrimRight(identity.ICCID, "F")
+	identity.ICCID = db.CanonicalICCID(identity.ICCID)
 	identity.IMSI = strings.TrimSpace(identity.IMSI)
 	return identity
 }

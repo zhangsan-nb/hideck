@@ -4,8 +4,9 @@ package outbound
 
 import (
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/yibaiba/hideck/pkg/simidentity"
 )
 
 type Kind string
@@ -34,7 +35,7 @@ type Config struct {
 }
 
 func CanonicalICCID(value string) string {
-	return strings.TrimRight(strings.Trim(strings.TrimSpace(value), "\""), "Ff")
+	return simidentity.CanonicalICCID(value)
 }
 
 func (c Config) normalized() (Config, error) {

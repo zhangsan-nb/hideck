@@ -115,3 +115,9 @@ wecom:
         "content": {{message}}
       }
     }
+
+# 按渠道只推送部分设备的短信和来电；没列出的渠道推送全部设备。
+# 渠道名：telegram、feishu、qq、weixin、wecom_bot、webhook、bark、email、pushplus、wecom
+# notification_device_filters:
+#   telegram: [modem-1]
+#   bark: [modem-2, modem-3]

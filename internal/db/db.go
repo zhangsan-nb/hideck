@@ -203,6 +203,9 @@ func Init(dbPath string) error {
 	if err := MigrateSMSCanonicalICCID(DB); err != nil {
 		return err
 	}
+	if err := MigrateSIMICCIDIdentities(DB); err != nil {
+		return err
+	}
 	if err := MigrateCardPolicyCanonicalICCID(DB); err != nil {
 		return err
 	}
@@ -271,7 +274,7 @@ func UpsertSIMCardIdentity(iccid, imsi, operator string, currentIMEI *string) er
 	if DB == nil {
 		return nil
 	}
-	iccid = strings.TrimSpace(iccid)
+	iccid = CanonicalICCID(iccid)
 	imsi = strings.TrimSpace(imsi)
 	operator = strings.TrimSpace(operator)
 	if iccid == "" {
@@ -299,6 +302,9 @@ func UpsertSIMCardIdentity(iccid, imsi, operator string, currentIMEI *string) er
 			Columns:   []clause.Column{{Name: "iccid"}},
 			DoUpdates: clause.Assignments(updates),
 		}).Create(&sim).Error; err != nil {
+			return err
+		}
+		if err := reconcileLiveICCIDTx(tx, SMSIdentity{ICCID: iccid, IMSI: imsi}); err != nil {
 			return err
 		}
 		if currentIMEI == nil {
@@ -416,7 +422,7 @@ func updateSIMCardPhoneNumberByIMSI(imsi, phone, source string) error {
 // updatePendingPhoneByICCID 与 updateSIMCardPhoneNumberByIMSI 同构，但按 ICCID 暂存。
 // 优先级同样 vowifi > modem。
 func updatePendingPhoneByICCID(iccid, phone, source string) error {
-	iccid = strings.TrimSpace(iccid)
+	iccid = CanonicalICCID(iccid)
 	if iccid == "" || DB == nil {
 		return nil
 	}
@@ -478,7 +484,7 @@ func RecordVoWiFiPhoneNumber(imsi, iccid, phone string) error {
 // 复用 updateSIMCardPhoneNumberByIMSI（自带 IMSI 等值守卫），随后删除 staging 行。
 func migratePendingPhoneToSubscription(imsi, iccid string) error {
 	imsi = strings.TrimSpace(imsi)
-	iccid = strings.TrimSpace(iccid)
+	iccid = CanonicalICCID(iccid)
 	if imsi == "" || iccid == "" || DB == nil {
 		return nil
 	}
@@ -538,6 +544,10 @@ func allSameRune(s string, r rune) bool {
 
 // UpdateDeviceCurrentSIM 更新设备当前插入的 SIM 卡
 func UpdateDeviceCurrentSIM(imei string, iccid *string) error {
+	if iccid != nil {
+		canonical := CanonicalICCID(*iccid)
+		iccid = &canonical
+	}
 	return DB.Model(&Device{}).Where("imei = ?", imei).Updates(map[string]interface{}{
 		"iccid":     iccid,
 		"last_seen": time.Now(),
@@ -557,36 +567,6 @@ func UpdateDeviceSignal(imei string, signalDBM int) error {
 // 的消息在同一秒内能通过 id 正确排序
 func SaveSMS(imsi, sender, recipient, content string, smsType, status int, timestamp time.Time) error {
 	return SaveSMSWithLocalPhone(imsi, "", sender, recipient, content, smsType, status, timestamp)
-}
-
-// HasDuplicateReceivedSMS 检查在指定时间窗口内是否已存在内容相同的下行接收短信。
-func HasDuplicateReceivedSMS(imsi, localPhone, sender, recipient, content string, timestamp time.Time, window time.Duration) (bool, error) {
-	if DB == nil {
-		return false, nil
-	}
-	imsi = strings.TrimSpace(imsi)
-	sender = strings.TrimSpace(sender)
-	recipient = strings.TrimSpace(recipient)
-	content = strings.TrimSpace(content)
-	if imsi == "" || sender == "" || content == "" {
-		return false, nil
-	}
-	if window <= 0 {
-		window = 5 * time.Minute
-	}
-	ts := timestamp.Truncate(time.Second)
-	start := ts.Add(-window)
-	end := ts.Add(window)
-
-	var count int64
-	err := DB.Model(&SMS{}).
-		Where("imsi = ? AND type = ? AND sender = ? AND recipient = ? AND content = ? AND timestamp BETWEEN ? AND ?",
-			imsi, 1, sender, strings.TrimSpace(recipient), content, start, end).
-		Count(&count).Error
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
 }
 
 // SaveSMSWithLocalPhone 保存短信记录并显式写入本机号码。
@@ -827,6 +807,7 @@ func GetSMSByIMSI(imsi string, limit int) ([]SMS, error) {
 
 // GetSMSByICCID 获取指定 ICCID 的短信列表（P4 ICCID 维度读取）。
 func GetSMSByICCID(iccid string, limit int) ([]SMS, error) {
+	iccid = CanonicalICCID(iccid)
 	var smsList []SMS
 	err := DB.Where("iccid = ?", iccid).Order("timestamp desc").Limit(limit).Find(&smsList).Error
 	return smsList, err
@@ -835,7 +816,7 @@ func GetSMSByICCID(iccid string, limit int) ([]SMS, error) {
 // ListIMSIsForICCID 返回这张卡见过的 IMSI：sim_subscriptions 按 current_iccid，
 // 以及 sim_cards 当前行。sim_cards.imsi 会被 upsert 盖掉，历史只靠订阅行。
 func ListIMSIsForICCID(iccid string) ([]string, error) {
-	iccid = strings.TrimSpace(iccid)
+	iccid = CanonicalICCID(iccid)
 	if DB == nil || iccid == "" {
 		return nil, nil
 	}
@@ -906,7 +887,7 @@ func GetICCIDForIMSI(imsi string) string {
 	if err != nil || strings.TrimSpace(r.ICCID) == "" || strings.HasPrefix(r.ICCID, "reader-imsi-") {
 		return "imsi:" + imsi
 	}
-	return strings.TrimSpace(r.ICCID)
+	return CanonicalICCID(r.ICCID)
 }
 
 // GetRecentSMS 获取所有 SIM 卡的最近短信列表
@@ -1202,7 +1183,7 @@ func DeleteSMSByICCIDAndPeer(iccid, peer string) (int64, error) {
 	if DB == nil {
 		return 0, ErrSMSNotFound
 	}
-	iccid = strings.TrimSpace(iccid)
+	iccid = CanonicalICCID(iccid)
 	peer = strings.TrimSpace(peer)
 	if iccid == "" || peer == "" {
 		return 0, ErrSMSNotFound

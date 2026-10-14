@@ -5062,6 +5062,15 @@ components:
           $ref: '#/components/schemas/WeComBotSettings'
         wecom:
           $ref: '#/components/schemas/WeComSettings'
+        device_filters:
+          type: object
+          description: 按渠道名列出只接收其短信和来电通知的设备 ID；没有条目或清单为空的渠道推送全部设备。保存时省略该字段则保留已保存的清单，未知渠道名返回 400。
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            telegram: [modem-1]
 
     UpdateNotificationSettingsRequest:
       allOf:

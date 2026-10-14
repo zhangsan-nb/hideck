@@ -12,6 +12,7 @@ const smsFragmentSessionUniqueIndexSQL = "CREATE UNIQUE INDEX IF NOT EXISTS uidx
 	"ON sms(imsi, fragment_session_key) WHERE fragment_session_key <> ''"
 
 type ReceivedMultipartSMS struct {
+	ICCID              string
 	IMSI               string
 	LocalPhone         string
 	Sender             string
@@ -20,7 +21,6 @@ type ReceivedMultipartSMS struct {
 	FragmentSessionKey string
 	Timestamp          time.Time
 	Incomplete         bool
-	iccid              string
 }
 
 type ReceivedMultipartSMSResult struct {
@@ -74,6 +74,7 @@ func SaveReceivedMultipartSMS(input ReceivedMultipartSMS) (ReceivedMultipartSMSR
 
 func normalizeReceivedMultipartSMS(input ReceivedMultipartSMS) (ReceivedMultipartSMS, error) {
 	result := input
+	result.ICCID = CanonicalICCID(input.ICCID)
 	result.IMSI = strings.TrimSpace(input.IMSI)
 	result.LocalPhone = strings.TrimSpace(input.LocalPhone)
 	result.Sender = strings.TrimSpace(input.Sender)
@@ -89,7 +90,9 @@ func normalizeReceivedMultipartSMS(input ReceivedMultipartSMS) (ReceivedMultipar
 	result.LocalPhone = normalizeSMSLocalPhone(
 		result.IMSI, 1, result.LocalPhone, result.Sender, result.Recipient,
 	)
-	result.iccid = GetICCIDForIMSI(result.IMSI)
+	if result.ICCID == "" {
+		result.ICCID = GetICCIDForIMSI(result.IMSI)
+	}
 	return result, nil
 }
 
@@ -98,7 +101,7 @@ func createReceivedMultipartSMS(
 	input ReceivedMultipartSMS,
 ) (ReceivedMultipartSMSResult, error) {
 	sms := SMS{
-		IMSI: input.IMSI, ICCID: input.iccid,
+		IMSI: input.IMSI, ICCID: input.ICCID,
 		Peer:       normalizeSMSPeer(1, input.Sender, input.Recipient),
 		LocalPhone: input.LocalPhone,
 		Sender:     input.Sender, Recipient: input.Recipient, Content: input.Content,

@@ -127,6 +127,11 @@ type Config struct {
 	Web      WebConfig      `mapstructure:"web"`
 	Proxy    ProxyConfig    `mapstructure:"proxy"`
 	VoWiFi   VoWiFiConfig   `mapstructure:"vowifi"`
+
+	// NotificationDeviceFilters limits SMS and call notifications per channel
+	// to the listed device IDs. A channel without an entry gets every device.
+	// Notifications without a device, such as IP changes, go to every channel.
+	NotificationDeviceFilters map[string][]string `mapstructure:"notification_device_filters"`
 }
 
 type SystemConfig struct {
@@ -342,6 +347,8 @@ type NotificationConfigs struct {
 	Email    EmailConfig
 	Pushplus PushplusConfig
 	WeCom    WeComConfig
+
+	DeviceFilters map[string][]string
 }
 
 func Load(path string) (*Config, error) {

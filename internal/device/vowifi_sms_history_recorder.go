@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iniwex5/vowifi-go/runtimehost/eventhost"
 	"github.com/yibaiba/hideck/internal/db"
 	"github.com/yibaiba/hideck/internal/smsnotify"
-	"github.com/iniwex5/vowifi-go/runtimehost/eventhost"
 )
 
 const vowifiReceivedSMSDuplicateWindow = 30 * time.Minute
@@ -23,7 +23,7 @@ type vowifiSMSRecordResult struct {
 }
 
 type receivedMultipartContext struct {
-	IMSI       string
+	Identity   SMSIdentity
 	LocalPhone string
 	Timestamp  time.Time
 }
@@ -68,6 +68,13 @@ func (r vowifiSMSHistoryRecorder) resolveICCID(devID string) string {
 	return strings.TrimSpace(iccid)
 }
 
+func (r vowifiSMSHistoryRecorder) resolveReceivingIdentity(devID string) SMSIdentity {
+	return normalizeSMSIdentity(SMSIdentity{
+		ICCID: r.resolveICCID(devID),
+		IMSI:  r.resolveIMSI(devID, ""),
+	})
+}
+
 func (r vowifiSMSHistoryRecorder) localPhone(imsi string) string {
 	phone, _ := db.GetSIMCardPhoneNumberByIMSI(strings.TrimSpace(imsi))
 	return strings.TrimSpace(phone)
@@ -81,22 +88,36 @@ func (r vowifiSMSHistoryRecorder) eventTime(at time.Time) time.Time {
 }
 
 func (r vowifiSMSHistoryRecorder) RecordReceived(e eventhost.SMSReceived) (vowifiSMSRecordResult, error) {
+	return r.recordReceived(e, r.resolveReceivingIdentity(e.DevID))
+}
+
+func (r vowifiSMSHistoryRecorder) recordReceived(
+	e eventhost.SMSReceived,
+	identity SMSIdentity,
+) (vowifiSMSRecordResult, error) {
 	if smsnotify.ShouldSuppressReceivedSMS(e.Content) {
 		return vowifiSMSRecordResult{Suppressed: true}, nil
 	}
-	imsi := r.resolveIMSI(e.DevID, "")
-	if imsi == "" {
+	identity = normalizeSMSIdentity(identity)
+	if identity.IMSI == "" {
 		return vowifiSMSRecordResult{}, nil
 	}
-	localPhone := r.localPhone(imsi)
+	if identity.ICCID == "" {
+		identity.ICCID = db.GetICCIDForIMSI(identity.IMSI)
+	}
+	localPhone := r.localPhone(identity.IMSI)
 	ts := r.eventTime(e.Time)
 	if strings.TrimSpace(e.FragmentSessionKey) != "" {
 		return r.recordReceivedMultipart(e, receivedMultipartContext{
-			IMSI: imsi, LocalPhone: localPhone, Timestamp: ts,
+			Identity: identity, LocalPhone: localPhone, Timestamp: ts,
 		})
 	}
 
-	dup, err := db.HasDuplicateReceivedSMS(imsi, localPhone, e.Sender, localPhone, e.Content, ts, vowifiReceivedSMSDuplicateWindow)
+	dup, err := db.HasDuplicateReceivedSMSForIdentity(db.ReceivedSMSDuplicate{
+		Identity:   db.SMSIdentity{ICCID: identity.ICCID, IMSI: identity.IMSI},
+		LocalPhone: localPhone, Sender: e.Sender, Recipient: localPhone, Content: e.Content,
+		Timestamp: ts, Window: vowifiReceivedSMSDuplicateWindow,
+	})
 	if err != nil {
 		return vowifiSMSRecordResult{}, err
 	}
@@ -104,7 +125,11 @@ func (r vowifiSMSHistoryRecorder) RecordReceived(e eventhost.SMSReceived) (vowif
 		return vowifiSMSRecordResult{Duplicate: true}, nil
 	}
 
-	err = db.SaveSMSWithLocalPhone(imsi, localPhone, strings.TrimSpace(e.Sender), localPhone, e.Content, 1, 0, ts)
+	err = db.SaveSMSForIdentity(db.SMSRecord{
+		Identity:   db.SMSIdentity{ICCID: identity.ICCID, IMSI: identity.IMSI},
+		LocalPhone: localPhone, Sender: strings.TrimSpace(e.Sender), Recipient: localPhone,
+		Content: e.Content, Type: 1, Status: 0, Timestamp: ts,
+	})
 	if err != nil {
 		return vowifiSMSRecordResult{}, err
 	}
@@ -116,7 +141,8 @@ func (r vowifiSMSHistoryRecorder) recordReceivedMultipart(
 	ctx receivedMultipartContext,
 ) (vowifiSMSRecordResult, error) {
 	result, err := db.SaveReceivedMultipartSMS(db.ReceivedMultipartSMS{
-		IMSI: ctx.IMSI, LocalPhone: ctx.LocalPhone, Sender: strings.TrimSpace(e.Sender),
+		ICCID: ctx.Identity.ICCID, IMSI: ctx.Identity.IMSI,
+		LocalPhone: ctx.LocalPhone, Sender: strings.TrimSpace(e.Sender),
 		Recipient: ctx.LocalPhone, Content: e.Content, Timestamp: ctx.Timestamp,
 		FragmentSessionKey: strings.TrimSpace(e.FragmentSessionKey),
 		Incomplete:         e.Incomplete,

@@ -104,7 +104,7 @@ func resolveAutomaticTaskProfile(task automation.Task, currentICCID string) (aut
 }
 
 func normalizeAutomaticTaskICCID(value string) string {
-	return strings.TrimRight(strings.Trim(strings.TrimSpace(value), "\""), "Ff")
+	return db.CanonicalICCID(value)
 }
 
 func (e *automaticTaskExecutor) switchTaskESIM(
