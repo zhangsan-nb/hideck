@@ -328,6 +328,7 @@ func (s *Server) newRouter() *gin.Engine {
 
 	// 以下接口需要鉴权
 	api.Use(s.authMiddleware())
+	api.Use(s.mbnMutationMiddleware())
 	{
 		api.POST("/system/uninstall", s.handleUninstall) // 必须登录后才能调用，见 handleUninstall 内的鉴权检查
 		api.GET("/openapi.yaml", s.handleOpenAPIYAML)
@@ -340,12 +341,14 @@ func (s *Server) newRouter() *gin.Engine {
 		api.GET("/traffic/analysis", s.handleTrafficAnalysis)       // 流量分析统计
 		s.registerPhoneRoutes(api)
 		s.registerUtRoutes(api)
+		s.registerMBNRoutes(api)
 
 		// ===== 短信 =====
 		api.POST("/sms/send", s.handleSendSMS)                    // 发送短信（自动选择 AT 或 VoWiFi）
 		api.GET("/sms/delivery/:message_id", s.handleSMSDelivery) // 查询发送投递状态
 		api.GET("/sms/contacts", s.handleGetSMSContacts)          // 获取短信联系人列表
 		api.GET("/sms/notifications", s.handleSMSNotifications)   // 全局未读数量与增量来信提醒
+		api.GET("/sms/events", s.handleSMSEvents)                 // 来信 SSE，Last-Event-ID / after_id 补发未读
 		api.GET("/sms/messages/:id", s.handleSMSMessageTarget)    // 按消息定位会话与历史窗口
 		api.GET("/sms/thread", s.handleGetSMSThread)              // 获取与某联系人的短信会话
 		api.PATCH("/sms/thread", s.handleMarkSMSThreadRead)       // 持久化指定会话已读进度
@@ -495,7 +498,7 @@ func withCommandEventStreamDeadlineDisabled(next http.Handler) http.Handler {
 }
 
 func isCommandEventStreamPath(path string) bool {
-	return path == "/api/command-center/stream" || path == "/api/commands/events/stream" || path == "/api/phone/events"
+	return path == "/api/command-center/stream" || path == "/api/commands/events/stream" || path == "/api/phone/events" || path == "/api/sms/events"
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

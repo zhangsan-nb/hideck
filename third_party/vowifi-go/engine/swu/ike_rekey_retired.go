@@ -49,12 +49,17 @@ func (s *Session) ikeContextForHeader(header *ikev2.IKEHeader) (ikeSAContext, bo
 		return ikeSAContext{}, false, errors.New("swu: missing IKE header")
 	}
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ikeContextForHeaderLocked(header)
+}
+
+// The caller holds mu, including while using the returned key material.
+func (s *Session) ikeContextForHeaderLocked(header *ikev2.IKEHeader) (ikeSAContext, bool, error) {
 	active := ikeSAContext{
 		spiI: s.spiI, spiR: s.spiR, keys: s.ikeKeys,
 		localInitiator: s.localIKEInitiator,
 	}
 	retired := s.retiredIKESA
-	s.mu.RUnlock()
 	if ikeContextMatches(active, header) {
 		return active, false, nil
 	}

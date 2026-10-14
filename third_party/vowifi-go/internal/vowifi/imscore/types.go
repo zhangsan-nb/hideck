@@ -209,6 +209,7 @@ type Service struct {
 	downlinkValidationWake    chan struct{}
 	downlinkGeneration        uint64
 	downlinkRequests          uint64
+	smsReception              smsReceptionEvidence
 	registerDownlinkBaseline  downlinkCheckpoint
 	replacementDownlinkWatch  *replacementDownlinkWatch
 	networkDone               sync.WaitGroup
@@ -357,15 +358,16 @@ type pingState struct {
 
 // SMSReadiness describes the independently verifiable IMS SMS prerequisites.
 type SMSReadiness struct {
-	Registered     bool
-	ProfileReady   bool
-	TransportReady bool
-	ReceiverReady  bool
-	SMSCPresent    bool
-	Ready          bool
-	MOReady        bool
-	HealthReady    bool
-	Reason         string
+	ReceiverPending bool
+	Registered      bool
+	ProfileReady    bool
+	TransportReady  bool
+	ReceiverReady   bool
+	SMSCPresent     bool
+	Ready           bool
+	MOReady         bool
+	HealthReady     bool
+	Reason          string
 }
 
 // ServiceStatus is a snapshot of the IMS service state.

@@ -21,6 +21,8 @@ import (
 	"github.com/yibaiba/hideck/internal/config"
 	"github.com/yibaiba/hideck/internal/db"
 	"github.com/yibaiba/hideck/internal/device"
+	"github.com/yibaiba/hideck/internal/mbn"
+	"github.com/yibaiba/hideck/internal/netprobe"
 	"github.com/yibaiba/hideck/internal/notify"
 	"github.com/yibaiba/hideck/internal/openwrt"
 	"github.com/yibaiba/hideck/internal/outbound"
@@ -134,6 +136,13 @@ func main() {
 
 	dynamicInterfaceMapper := openwrt.NewMapper(cfg.System.OpenWRTDynamicInterfaces)
 	pool := device.NewPoolWithDynamicInterfaceMapper(cfg, dynamicInterfaceMapper)
+	mbnService := mbn.New(mbn.Options{Context: pool.Context(), Store: mbn.NewDatabaseStore(db.DB), Files: mbn.DiskFiles{Directory: "data/mbn"}, Gateway: device.MBNGateway{Pool: pool, Probe: func(ctx context.Context, iface, target string) error {
+		return netprobe.New(netprobe.Config{Interface: iface, Timeout: 15 * time.Second}).Check(ctx, target)
+	}}})
+	if err := mbnService.Recover(pool.Context()); err != nil {
+		log.Fatalf("恢复 MBN 操作记录失败: %v", err)
+	}
+	pool.SetMBNService(mbnService)
 	outboundLimiter, err := outbound.New(db.NewOutboundUsageStore(db.DB), cfg.OutboundLimits, time.Now)
 	if err != nil {
 		log.Fatalf("初始化外发限流失败: %v", err)

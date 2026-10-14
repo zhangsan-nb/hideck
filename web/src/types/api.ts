@@ -66,6 +66,7 @@ export type VoWiFiRuntimeState = {
   ims_ready?: boolean
   sms_ready?: boolean
   sms_mo_ready?: boolean
+  sms_rx_pending?: boolean
   sms_ready_reason?: string
   reg_status?: number
   reg_status_text?: string
@@ -82,7 +83,7 @@ export type VoWiFiRuntimeState = {
   mwi_updated_at?: string
 }
 
-export type WiFiCallingHealthState = 'checking' | 'healthy' | 'recovering' | 'unavailable' | 'stopped'
+export type WiFiCallingHealthState = 'checking' | 'pending' | 'healthy' | 'recovering' | 'unavailable' | 'stopped'
 
 export type WiFiCallingHealthSegment = {
   state: WiFiCallingHealthState
@@ -197,7 +198,9 @@ export type DeviceMgmtListItem = {
   network_enabled: boolean
   phone_mode?: string
   vowifi_enabled?: boolean
+  vowifi_active?: boolean
   vowifi_runtime?: VoWiFiRuntimeState
+  vowifi_health?: WiFiCallingHealthSnapshot
   native_volte?: NativeVoLTEStatus
   modem_voice?: ModemVoiceStatus
   modem?: Pick<ModemStatus, 'operator' | 'native_spn' | 'native_mcc' | 'native_mnc' | 'network_mode' | 'network_duplex' | 'radio_band' | 'radio_channel' | 'signal_dbm' | 'signal_sinr' | 'imei' | 'iccid' | 'reg_status'>

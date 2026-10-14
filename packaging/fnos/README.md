@@ -59,6 +59,7 @@ GitHub Actions 的 **Build and Push Docker Image** 成功后，会把该次发�
 | --- | --- | --- |
 | 配置、通知渠道凭证和绑定 | `${TRIM_PKGETC}` | `/app/config` |
 | 短信数据库、录音、证书、ADB 状态 | `${TRIM_PKGVAR}/data` | `/app/data` |
+| MBN 原始文件库（随 data 一起备份） | `${TRIM_PKGVAR}/data/mbn` | `/app/data/mbn` |
 | 应用日志 | `${TRIM_PKGVAR}/logs` | `/app/logs` |
 
 使用飞牛提供的实际存储路径，不假定 `/vol1`，也不写进升级时替换的 `TRIM_APPDEST`。不声明公开共享目录，避免把验证码和 Bot 凭证暴露给其他 NAS 用户。

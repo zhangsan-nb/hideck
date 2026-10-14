@@ -84,7 +84,8 @@ func (a serviceAdapter) SetOnSMSReadinessChanged(fn func(SMSReadiness)) {
 
 func adaptSMSReadiness(readiness imscore.SMSReadiness) SMSReadiness {
 	return SMSReadiness{
-		Registered: readiness.Registered, ProfileReady: readiness.ProfileReady,
+		ReceiverPending: readiness.ReceiverPending,
+		Registered:      readiness.Registered, ProfileReady: readiness.ProfileReady,
 		TransportReady: readiness.TransportReady, ReceiverReady: readiness.ReceiverReady,
 		SMSCPresent: readiness.SMSCPresent, Ready: readiness.Ready,
 		MOReady: readiness.MOReady, HealthReady: readiness.HealthReady, Reason: readiness.Reason,
@@ -261,7 +262,8 @@ func (a serviceAdapter) StatusCurrent() Status {
 	return Status{State: State{
 		Phase: "ready", DeviceID: status.DeviceID,
 		IMSReady: status.IsRegistered(), SMSReady: sms.Ready, SMSMOReady: sms.MOReady, SMSHealthReady: sms.HealthReady,
-		RegStatus: boolStatus(status.IsRegistered()), RegStatusText: status.RegStatus,
+		SMSRXPending: sms.ReceiverPending,
+		RegStatus:    boolStatus(status.IsRegistered()), RegStatusText: status.RegStatus,
 		SessionState: "established", IMSState: status.RegState, SMSReadyReason: sms.Reason,
 	}}
 }

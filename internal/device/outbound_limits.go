@@ -62,6 +62,11 @@ func (p *Pool) consumeOutbound(ctx context.Context, w *Worker, request outbound.
 	if p == nil {
 		return nil
 	}
+	if w != nil {
+		if err := p.CheckMBNIdle(w.ID); err != nil {
+			return err
+		}
+	}
 	p.mu.RLock()
 	limiter := p.outboundLimiter
 	p.mu.RUnlock()

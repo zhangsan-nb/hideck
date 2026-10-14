@@ -401,6 +401,13 @@ func (w *Worker) SendSMS(phone, message string) error {
 }
 
 func (w *Worker) SendSMSWithOptions(phone, message string, opts smscodec.SubmitOptions) error {
+	if w.Pool != nil {
+		release, err := w.Pool.AcquireDeviceOperation(w.ID)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	check := w.Pool.outboundOwnerCheck(w)
 	if err := w.Pool.authorizeSMS(context.Background(), outboundSMSRequest{Worker: w, To: phone, Text: message, Options: opts}); err != nil {
 		return err

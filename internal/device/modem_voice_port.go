@@ -16,6 +16,9 @@ type modemVoicePort struct {
 }
 
 func (port *modemVoicePort) check(ctx context.Context) error {
+	if err := port.pool.CheckMBNIdle(port.worker.ID); err != nil {
+		return err
+	}
 	if err := port.checkIdentity(ctx); err != nil {
 		return err
 	}

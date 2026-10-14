@@ -50,6 +50,7 @@ type voiceSession struct {
 type nativeCall struct {
 	ID        string
 	QMI       uint8
+	Mode      qmi.VoiceCallMode
 	Direction string
 	Peer      string
 	State     string
@@ -217,9 +218,11 @@ func (c *Controller) beginCall(ctx context.Context, request voicehost.BeginCallR
 	}
 	now := time.Now()
 	id := ""
+	mode := qmi.VoiceCallModeNoService
 	if vs := c.sessionVoice(deviceID); vs != nil {
 		if prev, ok := vs.getByQMI(qmiID); ok && stateRank(prev.State) != rankTerminal {
 			id = prev.ID
+			mode = prev.Mode
 			if !prev.Start.IsZero() {
 				now = prev.Start
 			}
@@ -236,7 +239,7 @@ func (c *Controller) beginCall(ctx context.Context, request voicehost.BeginCallR
 		sdp = media.sdp
 		c.media.put(id, media)
 	}
-	nc := nativeCall{ID: id, QMI: qmiID, Direction: "outbound", Peer: request.Callee, State: "calling", Start: now, ClientSDP: sdp}
+	nc := nativeCall{ID: id, QMI: qmiID, Mode: mode, Direction: "outbound", Peer: request.Callee, State: "calling", Start: now, ClientSDP: sdp}
 	c.storeCall(deviceID, nc)
 	c.mu.Lock()
 	vs := (*voiceSession)(nil)
@@ -414,14 +417,6 @@ func (c *Controller) SwitchCall(string, string) error {
 	return errors.New("volte: native call switch is not supported")
 }
 
-func (c *Controller) SendCallDTMF(deviceID, id, digit string) error {
-	call, ok := c.lookup(deviceID, id)
-	if !ok {
-		return fmt.Errorf("volte: call %s not found", id)
-	}
-	return c.host.VOICEBurstDTMF(context.Background(), deviceID, call.QMI, digit)
-}
-
 func (c *Controller) StartCallCapture(deviceID, id, basePath string) error {
 	if c.media.get(id) != nil {
 		return nil
@@ -525,7 +520,7 @@ func (c *Controller) handleVoiceInfo(deviceID string, vs *voiceSession, info *qm
 			}
 		}
 		next := nativeCall{
-			ID: id, QMI: item.ID, Direction: dir, Peer: peer, State: state,
+			ID: id, QMI: item.ID, Mode: item.Mode, Direction: dir, Peer: peer, State: state,
 			Start: startedAt(prev, now), ClientSDP: prev.ClientSDP, Reason: reason, Codec: codec,
 			Held: prev.Held,
 		}

@@ -59,6 +59,7 @@ func (s *SocketManager) acceptSource(source *net.UDPAddr) bool {
 
 func (s *SocketManager) reportPortChange(newPort int) {
 	oldPort := s.RemoteAddr.Port
+	s.natT = s.natT || oldPort == 4500 || newPort == 4500
 	s.RemoteAddr.Port = newPort
 	reason := fmt.Sprintf("NAT port changed %d -> %d", oldPort, newPort)
 	logInfo(reason)
@@ -74,7 +75,7 @@ func (s *SocketManager) dispatchDatagram(packet []byte, fromPort int) {
 	if len(packet) == 1 && packet[0] == 0xff {
 		return
 	}
-	if ike, ok := parseIKEPayload(packet, cap(packet), fromPort); ok {
+	if ike, ok := parseIKEPayload(packet, cap(packet), s.natTEnabled() || fromPort == 4500); ok {
 		s.deliverPacket(ike, packetDelivery{
 			channel: s.IKEChan, received: &s.receivedIKE, dropped: &s.droppedIKE, label: "IKE",
 		})
@@ -112,7 +113,7 @@ func (s *SocketManager) SendIKE(packet []byte) error {
 	if err != nil {
 		return err
 	}
-	if destination.Port == 4500 {
+	if s.natTEnabled() {
 		marked := make([]byte, 4, len(packet)+4)
 		packet = append(marked, packet...)
 	}

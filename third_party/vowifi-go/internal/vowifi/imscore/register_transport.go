@@ -544,6 +544,7 @@ func (s *Service) resetPortSRecoveryKnowledge() {
 	s.mu.Lock()
 	s.downlinkGeneration++
 	s.downlinkRequests = 0
+	s.smsReception = smsReceptionEvidence{}
 	s.udpDownlinkProven.Store(false)
 	s.cancelReplacementDownlinkWatchLocked()
 	s.mu.Unlock()
@@ -663,6 +664,7 @@ func (s *Service) clearClosedRegistrationTCP(conn net.Conn, readErr error) {
 			s.abandonReplacementDownlinkWaitLocked()
 		}
 		s.registrationTCP = nil
+		s.invalidateSMSReceptionLocked()
 		s.registrationTCPProtected = false
 		if !stopped {
 			s.regState = regFailed

@@ -1,4 +1,5 @@
 import { t } from '../i18n'
+import { smsReceptionDetail, smsReceptionPending } from './smsReceptionPresentation'
 import type { DashboardDevice, NativeVoLTEStatus, VoWiFiRuntimeState } from '../types/api'
 import { isNativeVoLTEMode } from './phoneMode'
 import { modemVoicePresentation, modemVoiceStages } from './modemVoicePresentation'
@@ -15,6 +16,7 @@ export const VOWIFI_CORE_STAGE_COUNT = 4
 
 export type DashboardConnectionStage = Readonly<{
   key: string
+  pending?: boolean
   ready: boolean | undefined
 }>
 
@@ -88,7 +90,8 @@ export function createDashboardStages(
     Object.freeze({ key: 'Tunnel', ready: runtime?.tunnel_ready }),
     Object.freeze({ key: 'IMS', ready: runtime?.ims_ready }),
     Object.freeze({ key: 'SMS TX', ready: smsSendReady }),
-    Object.freeze({ key: 'SMS RX', ready: runtime?.sms_ready })
+    Object.freeze({ key: 'SMS RX', ready: smsReceptionPending(runtime) ? undefined : runtime?.sms_ready,
+      ...(smsReceptionPending(runtime) ? { pending: true } : {}) })
   ])
 }
 
@@ -176,7 +179,7 @@ export function createDashboardDevicePresentation(
       ? (isOnline ? volte!.title : t('dashboard.deviceOfflineShort'))
       : getConnectionTitle(device, isOnline, isVoWiFi),
     connectionType,
-    connectionDetail: isVoLTE ? volte!.detail : '',
+    connectionDetail: isVoLTE ? volte!.detail : smsReceptionDetail(device.vowifi_runtime),
     displayName: String(device.name || device.id).trim() || device.id,
     ipv4: isVoWiFi ? '' : normalizeAddress(device.public_ip),
     ipv6: isVoWiFi ? '' : normalizeAddress(device.public_ipv6),

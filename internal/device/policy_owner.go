@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 var errPolicyOwnerChanged = errors.New("卡策略任务已失效：设备或 SIM 已更换，或正在切卡")
@@ -12,6 +13,8 @@ var errPolicyOwnerChanged = errors.New("卡策略任务已失效：设备或 SIM
 type policyTransition struct {
 	sync.Mutex
 	switchEpoch uint64
+	mbnSession  atomic.Pointer[mbnDeviceSession]
+	operations  sync.RWMutex // Ordinary operations share; MBN owns it through re-enumeration.
 }
 
 func (p *Pool) policyTransitionFor(deviceID string) *policyTransition {

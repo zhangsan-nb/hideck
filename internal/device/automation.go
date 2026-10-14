@@ -35,6 +35,11 @@ func (p *Pool) SwitchESIMProfileAndWait(ctx context.Context, deviceID, iccid, ai
 	if p == nil {
 		return errors.New("device pool is unavailable")
 	}
+	releaseOperation, err := p.AcquireDeviceOperation(deviceID)
+	if err != nil {
+		return err
+	}
+	defer releaseOperation()
 	target := normalizeAutomationICCID(iccid)
 	if target == "" {
 		return errors.New("target ICCID is empty")

@@ -21,6 +21,7 @@ type SMSReceiverStatus struct {
 }
 
 type inboundSIPResult struct {
+	smsReceived  bool
 	response     string
 	afterReply   func()
 	onReplyError func()
@@ -225,6 +226,7 @@ func (s *Service) dispatchInboundSIPRequest(
 	peer net.Conn,
 ) error {
 	s.logInboundSIPRequest(request)
+	smsCheckpoint := s.captureSMSReceptionCheckpoint()
 	s.markSelfRoutedSubscription(request)
 	s.transport.DeliverRequest(raw)
 	transaction, handled, err := s.acceptServerRequest(request, raw, reply)
@@ -268,6 +270,9 @@ func (s *Service) dispatchInboundSIPRequest(
 		return responseErr
 	}
 	callback = result.afterReply
+	if err == nil && result.smsReceived {
+		s.recordRegistrationSMS(peer, smsCheckpoint)
+	}
 	return err
 }
 

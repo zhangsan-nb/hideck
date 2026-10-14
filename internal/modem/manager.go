@@ -39,6 +39,7 @@ type rxMsg struct {
 
 // commandRequest AT 命令请求结构
 type commandRequest struct {
+	upload       []byte          // Exclusive QFUPL transaction, never interleaved with text AT.
 	barrier      bool            // Queue fence: completes without writing to the modem.
 	ctx          context.Context // Optional cancellation before the serial write; sent commands are drained.
 	cmd          string
@@ -701,6 +702,10 @@ func (m *Manager) handleCommand(req commandRequest) {
 	}
 	if req.barrier {
 		req.respChan <- ""
+		return
+	}
+	if req.upload != nil {
+		m.handleFileUpload(req)
 		return
 	}
 	startTime := time.Now()

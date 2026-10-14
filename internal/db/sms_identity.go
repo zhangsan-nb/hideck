@@ -142,7 +142,9 @@ func SaveSMSForIdentity(input SMSRecord) error {
 		Sender:     sender, Recipient: recipient, Content: input.Content,
 		Type: input.Type, Status: input.Status, Timestamp: input.Timestamp.Truncate(time.Second),
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	smsPublicationMu.Lock()
+	defer smsPublicationMu.Unlock()
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := validateSMSIdentityMapping(tx, input.Identity); err != nil {
 			return err
 		}
@@ -154,6 +156,10 @@ func SaveSMSForIdentity(input SMSRecord) error {
 		}
 		return upsertSMSContactFromSMS(tx, &sms)
 	})
+	if err == nil {
+		publishIncomingSMS(sms)
+	}
+	return err
 }
 
 func validateSMSIdentityMapping(tx *gorm.DB, identity SMSIdentity) error {

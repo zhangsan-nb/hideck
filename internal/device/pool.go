@@ -21,6 +21,7 @@ import (
 	"github.com/yibaiba/hideck/internal/db"
 	"github.com/yibaiba/hideck/internal/esim"
 	mbimcore "github.com/yibaiba/hideck/internal/mbim"
+	"github.com/yibaiba/hideck/internal/mbn"
 	"github.com/yibaiba/hideck/internal/modem"
 	modemvoicehost "github.com/yibaiba/hideck/internal/modemvoice/host"
 	"github.com/yibaiba/hideck/internal/pcsc"
@@ -175,6 +176,7 @@ type Worker struct {
 }
 
 type Pool struct {
+	mbnService      *mbn.Service
 	outboundLimiter OutboundLimiter
 	workers         map[string]*Worker
 	rebuilding      map[string]bool // 标记设备是否正在重载

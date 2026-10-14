@@ -42,6 +42,9 @@ func (p *Pool) RestoreNativeVoLTE(ctx context.Context, deviceID string) error {
 }
 
 func (p *Pool) EnableNativeVoLTE(deviceID string) error {
+	if err := p.CheckMBNIdle(deviceID); err != nil {
+		return err
+	}
 	if p == nil || p.volteCtl == nil {
 		return fmt.Errorf("VoLTE 控制器未初始化")
 	}
@@ -74,6 +77,11 @@ func (p *Pool) enableNativeVoLTE(deviceID string, start *nativeVoLTEStart) error
 		}
 		logger.Warn("VoLTE 等待 QMI 就绪失败，继续尝试 AT", "device", deviceID, "err", err)
 	}
+	release, err := p.AcquireDeviceOperation(deviceID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := p.volteCtl.EnableChecked(start.ctx, volte.EnableRequest{DeviceID: deviceID,
 		Validate: func() error { return p.validateNativeVoLTEStart(deviceID, start) },
 	}); err != nil {
@@ -270,6 +278,11 @@ func (p *Pool) USBAudioUnusable(deviceID string) bool {
 }
 
 func (p *Pool) VOICEDial(ctx context.Context, deviceID, number string) (uint8, error) {
+	release, err := p.AcquireDeviceOperation(deviceID)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	w := p.GetWorker(deviceID)
 	if w == nil || w.QMICore == nil {
 		return 0, fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
@@ -309,6 +322,32 @@ func (p *Pool) VOICEBurstDTMF(ctx context.Context, deviceID string, callID uint8
 		return fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
 	}
 	_, err := w.QMICore.VOICEBurstDTMF(ctx, callID, digits)
+	return err
+}
+
+func (p *Pool) BindVoiceDTMF(deviceID string) (volte.DTMFTransport, error) {
+	w := p.GetWorker(deviceID)
+	if w == nil || w.QMICore == nil {
+		return nil, fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
+	}
+	return w.QMICore, nil
+}
+
+func (p *Pool) VOICEStartContinuousDTMF(ctx context.Context, deviceID string, callID, digit uint8) error {
+	w := p.GetWorker(deviceID)
+	if w == nil || w.QMICore == nil {
+		return fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
+	}
+	_, err := w.QMICore.VOICEStartContinuousDTMF(ctx, callID, digit)
+	return err
+}
+
+func (p *Pool) VOICEStopContinuousDTMF(ctx context.Context, deviceID string, callID uint8) error {
+	w := p.GetWorker(deviceID)
+	if w == nil || w.QMICore == nil {
+		return fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
+	}
+	_, err := w.QMICore.VOICEStopContinuousDTMF(ctx, callID)
 	return err
 }
 

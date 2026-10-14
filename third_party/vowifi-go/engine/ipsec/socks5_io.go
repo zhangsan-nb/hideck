@@ -52,7 +52,7 @@ func (t *Socks5Transport) Stop() {
 }
 
 func (t *Socks5Transport) SendIKE(packet []byte) error {
-	if t.RemotePort() == 4500 {
+	if t.natTEnabled() {
 		marked := make([]byte, 4, len(packet)+4)
 		packet = append(marked, packet...)
 	}
@@ -124,7 +124,7 @@ func (t *Socks5Transport) processSocks5Datagram(raw []byte) {
 	if datagram.DstAddr != nil {
 		fromPort = datagram.DstAddr.Port
 	}
-	if ike, ok := parseIKEPayload(payload, cap(payload), fromPort); ok {
+	if ike, ok := parseIKEPayload(payload, cap(payload), t.natTEnabled() || fromPort == 4500); ok {
 		t.deliverSocks5Packet(ike, packetDelivery{
 			channel: t.ikeChan, received: &t.receivedIKE, dropped: &t.droppedIKE, label: "IKE",
 		})

@@ -160,6 +160,9 @@ func (p *Pool) enableVoWiFiWhenReady(deviceID string, timeout time.Duration, rea
 }
 
 func (p *Pool) EnableVoWiFi(deviceID string) error {
+	if err := p.CheckMBNIdle(deviceID); err != nil {
+		return err
+	}
 	if p.IsESIMSwitching(deviceID) {
 		return fmt.Errorf("设备 %s 正在切卡，暂不允许启动 VoWiFi", deviceID)
 	}

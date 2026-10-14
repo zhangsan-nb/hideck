@@ -1,4 +1,5 @@
 import { t } from '../i18n'
+import { smsReceptionDetail, smsReceptionPending } from './smsReceptionPresentation'
 import type { DeviceOverviewItem } from '../types/api'
 import {
   createDashboardStages,
@@ -19,6 +20,7 @@ export type OverviewConnectionKind = 'wifi' | 'volte' | 'cellular'
 
 export type OverviewConnectionStage = Readonly<{
   key: string
+  pending?: boolean
   ready: boolean | undefined
 }>
 
@@ -145,7 +147,11 @@ function createVoWiFiOrCellularPresentation(
   } else if (device.vowifi_active && coreStagesReady && smsStagesReady) {
     tone = 'is-ready'
     title = t('overview.vowifiConnected')
-    detail = t('overview.vowifiConnectedHint')
+    detail = smsReceptionDetail(runtime) || t('overview.vowifiConnectedHint')
+  } else if (device.vowifi_active && coreStagesReady && smsReceptionPending(runtime) && !hasFailedSMSStage) {
+    tone = 'is-pending'
+    title = t('overview.vowifiConnected')
+    detail = smsReceptionDetail(runtime)
   } else if (device.vowifi_active && coreStagesReady && hasFailedSMSStage) {
     tone = 'is-pending'
     title = t('overview.vowifiConnected')

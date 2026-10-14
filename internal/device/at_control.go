@@ -35,6 +35,11 @@ func (p *Pool) ExecuteAT(deviceID, command string, timeout time.Duration) (strin
 }
 
 func (p *Pool) ExecuteATContext(ctx context.Context, request ATRequest) (string, error) {
+	releaseOperation, err := p.AcquireDeviceOperation(request.DeviceID)
+	if err != nil {
+		return "", err
+	}
+	defer releaseOperation()
 	if ctx == nil || request.Timeout <= 0 || strings.TrimSpace(request.Command) == "" || strings.ContainsAny(request.Command, "\r\n\x00") {
 		return "", fmt.Errorf("%w: 无效的 AT 请求", ErrATUnavailable)
 	}

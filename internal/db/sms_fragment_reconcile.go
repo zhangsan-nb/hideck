@@ -46,6 +46,8 @@ func SaveReceivedMultipartSMS(input ReceivedMultipartSMS) (ReceivedMultipartSMSR
 		return ReceivedMultipartSMSResult{}, err
 	}
 	var result ReceivedMultipartSMSResult
+	smsPublicationMu.Lock()
+	defer smsPublicationMu.Unlock()
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		var existing SMS
 		findErr := tx.Where(
@@ -64,6 +66,9 @@ func SaveReceivedMultipartSMS(input ReceivedMultipartSMS) (ReceivedMultipartSMSR
 		result = reconciled
 		return reconcileErr
 	})
+	if err == nil && (result.Created || result.Reconciled) {
+		publishIncomingSMSByID(result.SMSID)
+	}
 	return result, err
 }
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yibaiba/hideck/internal/mbn"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -150,6 +152,7 @@ func Init(dbPath string) error {
 
 	// 自动迁移
 	if err := DB.AutoMigrate(
+		&mbn.Asset{}, &mbn.Policy{}, &mbn.Operation{},
 		&Device{},
 		&CardPolicy{},
 		&OutboundUsage{},

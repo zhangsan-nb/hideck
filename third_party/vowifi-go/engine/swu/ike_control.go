@@ -239,6 +239,13 @@ func (s *Session) dispatchIKEResponse(
 	raw []byte,
 	taskManager *TaskManager,
 ) error {
+	if err := s.authenticateIKEResponse(header, raw); err != nil {
+		if errors.Is(err, errUnauthenticatedIKE) {
+			s.dropInvalidIKE(raw, err)
+			return nil
+		}
+		return err
+	}
 	if taskManager.handleResponseForExchange(header.MessageID, header.ExchangeType, raw) {
 		return nil
 	}

@@ -57,14 +57,14 @@ function stageLabel(ready: boolean | undefined): string {
           :key="stage.key"
           class="overview-service-step"
           :class="{ 'is-ready': stage.ready === true, 'is-failed': stage.ready === false }"
-          :aria-label="`${stage.key}：${stageLabel(stage.ready)}`"
+          :aria-label="`${stage.key}：${stage.pending ? '待验证' : stageLabel(stage.ready)}`"
         >
           <i aria-hidden="true">
             <Checkmark12Regular v-if="stage.ready === true" />
             <Dismiss12Regular v-else-if="stage.ready === false" />
             <Subtract12Regular v-else />
           </i>
-          <small>{{ stage.key }}</small>
+          <small>{{ stage.key }}<template v-if="stage.pending"> · 待验证</template></small>
         </div>
       </div>
     </div>

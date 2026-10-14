@@ -5,23 +5,23 @@ package ipsec
 //
 //   - A UDP datagram whose first 4 bytes are the non-ESP marker (0x00 00 00 00)
 //     is the IKE packet that follows the marker.
-//   - On UDP port 4500 every other datagram is ESP (RFC 3948 2.2). Encrypted
+//   - On a NAT-T transport every other datagram is ESP (RFC 3948 2.2). Encrypted
 //     ESP bytes match the IKEv2 version and exchange type below about once in
 //     16,000 packets, so the guess below must not run there.
-//   - From port 500, or an unknown port, a packet whose version/exchange-type
+//   - Before NAT-T is enabled, a packet whose version/exchange-type
 //     bytes match IKEv2 (version 0x20, exchange type 34..37) is an unmarked
 //     IKE packet; any other packet is ESP.
 //
 // origCap is the capacity of the original buffer so the returned slice header
-// stays consistent. fromPort is the peer's UDP source port, 0 when unknown.
-func parseIKEPayload(b []byte, origCap int, fromPort int) ([]byte, bool) {
+// stays consistent. natT survives peer source-port translation by NAT.
+func parseIKEPayload(b []byte, origCap int, natT bool) ([]byte, bool) {
 	_ = origCap // preserved for signature fidelity (slice cap already adjusted)
 	if len(b) < 4 {
 		return nil, false
 	}
 	nonZeroSPI := b[0] != 0 || b[1] != 0 || b[2] != 0 || b[3] != 0
 	if nonZeroSPI {
-		if fromPort == 4500 {
+		if natT {
 			return nil, false
 		}
 		// ESP, or an unmarked IKE packet (IKE_AUTH response etc.).

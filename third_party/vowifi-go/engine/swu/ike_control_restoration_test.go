@@ -121,9 +121,9 @@ func TestControlLoopDropsInvalidIKEPackets(t *testing.T) {
 func TestControlLoopRetainsResponseUntilLegacyWaiterRegisters(t *testing.T) {
 	session, transport := newEstablishedControlSession(t)
 	defer stopControlTestSession(session)
-	response, err := (&ikev2.IKEPacket{Header: newIKEHeader(
+	response, err := session.encryptAndWrap(&ikev2.IKEPacket{Header: newIKEHeader(
 		session.spiI, session.spiR, ikev2.IKE_AUTH, ikeResponseFlag, 77,
-	)}).Encode()
+	)})
 	if err != nil {
 		t.Fatalf("encode early response: %v", err)
 	}
