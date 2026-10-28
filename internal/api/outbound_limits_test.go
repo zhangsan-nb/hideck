@@ -24,7 +24,10 @@ func (deniedOutbound) Consume(context.Context, outbound.Request) error {
 func TestHandleSendSMSReturnsSharedLimitBeforeSending(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	pool := device.NewPool(&config.Config{})
-	pool.AttachWorkerForTest(&device.Worker{ID: "dev", Backend: &ussdDeviceBackendStub{}})
+	worker := &device.Worker{ID: "dev", Backend: &ussdDeviceBackendStub{}}
+	setNestedPrivateField(t, worker, []string{"state", "Identity", "ICCID"}, "8944000000000000601")
+	setNestedPrivateField(t, worker, []string{"state", "Identity", "IMSI"}, "234150000000601")
+	pool.AttachWorkerForTest(worker)
 	pool.SetOutboundLimiter(deniedOutbound{})
 	sent := false
 	pool.SetRoutedSMSTestSenders(nil, func(string, string, string) error { sent = true; return nil })

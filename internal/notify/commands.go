@@ -85,7 +85,12 @@ func (m *Manager) handleCmdSendSMS(cmdCtx CommandContext, args []string) string 
 			return
 		}
 		if routed.Via == device.RoutedSMSViaCS {
-			if err := db.SaveSMS(worker.GetIMSI(), worker.ID, phone, message, 2, 2, time.Now()); err != nil {
+			err := db.SaveSMSForIdentity(db.SMSRecord{
+				Identity: db.SMSIdentity{ICCID: routed.Identity.ICCID, IMSI: routed.Identity.IMSI},
+				Sender:   worker.ID, Recipient: phone, Content: message,
+				Type: 2, Status: 2, Timestamp: time.Now(),
+			})
+			if err != nil {
 				logger.Warn("短信发送成功但入库失败", "device", deviceID, "err", err)
 			}
 		}
@@ -164,7 +169,7 @@ func (m *Manager) handleCmdStatus(cmdCtx CommandContext, args []string) string {
 		}
 	}
 	localPhone := "--"
-	if phone, err := db.GetSIMCardPhoneNumberByIMSI(status.IMSI); err == nil && strings.TrimSpace(phone) != "" {
+	if phone, err := db.GetPhoneNumberForSMSIdentity(db.SMSIdentity{ICCID: status.ICCID, IMSI: status.IMSI}); err == nil && strings.TrimSpace(phone) != "" {
 		localPhone = strings.TrimSpace(phone)
 	}
 
@@ -327,7 +332,7 @@ func (m *Manager) handleCmdList(cmdCtx CommandContext, args []string) string {
 		phone := "N/A"
 		vowifiActive := m.pool.IsVoWiFiActive(w.ID)
 		opName := device.DisplayOperatorName(status, vowifiActive)
-		if phoneByIMSI, err := db.GetSIMCardPhoneNumberByIMSI(status.IMSI); err == nil && strings.TrimSpace(phoneByIMSI) != "" {
+		if phoneByIMSI, err := db.GetPhoneNumberForSMSIdentity(db.SMSIdentity{ICCID: status.ICCID, IMSI: status.IMSI}); err == nil && strings.TrimSpace(phoneByIMSI) != "" {
 			phone = strings.TrimSpace(phoneByIMSI)
 		}
 		if opName == "" && !vowifiActive && status.ICCID != "" {
@@ -401,12 +406,16 @@ func (m *Manager) handleCmdSMSInbox(cmdCtx CommandContext, args []string) string
 			return commandFailureBlock("短信列表", deviceID, "设备未找到")
 		}
 
-		imsi := worker.GetIMSI()
-		if imsi == "" {
-			return fmt.Sprintf("❌ 无法获取设备 %s 的 IMSI", deviceID)
+		// By ICCID: a multi-IMSI card stores SMS under each IMSI it used.
+		if iccid := worker.CurrentICCID(); iccid != "" {
+			smsList, err = db.GetSMSByICCID(iccid, limit)
+		} else {
+			imsi := worker.GetIMSI()
+			if imsi == "" {
+				return fmt.Sprintf("❌ 无法获取设备 %s 的 IMSI", deviceID)
+			}
+			smsList, err = db.GetSMSByIMSI(imsi, limit)
 		}
-
-		smsList, err = db.GetSMSByIMSI(imsi, limit)
 	} else {
 		smsList, err = db.GetRecentSMS(limit)
 	}
@@ -663,12 +672,9 @@ func (m *Manager) handleCmdCall(cmdCtx CommandContext, args []string) string {
 
 	displayName := m.deviceLabel(worker.ID)
 	caller := "未知"
-	if worker.Modem != nil {
-		if imsi := strings.TrimSpace(worker.GetIMSI()); imsi != "" {
-			if phone, err := db.GetSIMCardPhoneNumberByIMSI(imsi); err == nil && strings.TrimSpace(phone) != "" {
-				caller = strings.TrimSpace(phone)
-			}
-		}
+	status := worker.GetCachedDeviceStatus()
+	if phone, err := db.GetPhoneNumberForSMSIdentity(db.SMSIdentity{ICCID: status.ICCID, IMSI: status.IMSI}); err == nil && strings.TrimSpace(phone) != "" {
+		caller = strings.TrimSpace(phone)
 	}
 
 	go func() {
@@ -809,12 +815,9 @@ func (m *Manager) handleCmdCellCall(cmdCtx CommandContext, args []string) string
 
 	displayName := m.deviceLabel(worker.ID)
 	caller := "未知"
-	if worker.Modem != nil {
-		if imsi := strings.TrimSpace(worker.GetIMSI()); imsi != "" {
-			if phone, err := db.GetSIMCardPhoneNumberByIMSI(imsi); err == nil && strings.TrimSpace(phone) != "" {
-				caller = strings.TrimSpace(phone)
-			}
-		}
+	status := worker.GetCachedDeviceStatus()
+	if phone, err := db.GetPhoneNumberForSMSIdentity(db.SMSIdentity{ICCID: status.ICCID, IMSI: status.IMSI}); err == nil && strings.TrimSpace(phone) != "" {
+		caller = strings.TrimSpace(phone)
 	}
 
 	// Two-step confirmation: send prompt, wait for /y or /n.

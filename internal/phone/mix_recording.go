@@ -25,18 +25,20 @@ const (
 )
 
 type mixedRecorder struct {
-	path      string
-	file      *os.File
-	toIMS     chan []int16
-	fromIMS   chan []int16
-	done      chan struct{}
-	closeOnce sync.Once
-	wg        sync.WaitGroup
-	lifecycle sync.RWMutex
-	closed    bool
-	resultMu  sync.Mutex
-	resultErr error
-	dataBytes uint32
+	path          string
+	file          *os.File
+	toIMS         chan []int16
+	fromIMS       chan []int16
+	done          chan struct{}
+	closeOnce     sync.Once
+	wg            sync.WaitGroup
+	lifecycle     sync.RWMutex
+	closed        bool
+	resultMu      sync.Mutex
+	resultErr     error
+	dataBytes     uint32
+	recordToIMS   bool
+	recordFromIMS bool
 }
 
 type mixedFrameQueues struct {
@@ -46,6 +48,14 @@ type mixedFrameQueues struct {
 }
 
 func newMixedRecorder(path string) (*mixedRecorder, error) {
+	return newDirectionalRecorder(path, true, true)
+}
+
+func newIncomingRecorder(path string) (*mixedRecorder, error) {
+	return newDirectionalRecorder(path, false, true)
+}
+
+func newDirectionalRecorder(path string, recordToIMS, recordFromIMS bool) (*mixedRecorder, error) {
 	if path == "" {
 		return nil, errors.New("phone: mixed recording path is empty")
 	}
@@ -62,6 +72,7 @@ func newMixedRecorder(path string) (*mixedRecorder, error) {
 	recorder := &mixedRecorder{
 		path: path, file: file, toIMS: make(chan []int16, recordingFrameBuffer),
 		fromIMS: make(chan []int16, recordingFrameBuffer), done: make(chan struct{}),
+		recordToIMS: recordToIMS, recordFromIMS: recordFromIMS,
 	}
 	recorder.wg.Add(1)
 	go recorder.run()
@@ -70,6 +81,10 @@ func newMixedRecorder(path string) (*mixedRecorder, error) {
 
 func (recorder *mixedRecorder) Add(direction mixDirection, pcmu []byte) {
 	if recorder == nil || len(pcmu) != browserSamplesPerFrame {
+		return
+	}
+	if (direction == mixToIMS && !recorder.recordToIMS) ||
+		(direction == mixFromIMS && !recorder.recordFromIMS) {
 		return
 	}
 	recorder.lifecycle.RLock()

@@ -5,6 +5,7 @@ import type { CardPolicy } from '../types/api'
 import { cardsService } from '../services/cards'
 import { devicesService } from '../services/devices'
 import { useCardPolicyToggles, type PolicyMirror } from '../composables/useCardPolicyToggles'
+import { useCardPolicyFields } from '../composables/useCardPolicyFields'
 
 const props = defineProps<{
   deviceId: string
@@ -57,6 +58,22 @@ async function loadPolicy() {
 }
 
 onMounted(loadPolicy)
+
+const {
+  localPhoneOverride,
+  pending: fieldPending,
+  error: fieldError,
+  errorField,
+  saveLocalPhoneOverride
+} = useCardPolicyFields(policy, (patch) => cardsService.putPolicy(props.iccid, patch), () => {
+  void loadPolicy()
+  emit('policyChanged')
+})
+
+function onLocalPhoneEnter(event: KeyboardEvent) {
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
+}
 
 // stored 执行器：PUT 互斥后的完整三元组
 async function putTriple(next: PolicyMirror): Promise<{ ok: boolean }> {
@@ -213,6 +230,28 @@ const {
             aria-label="启动 WiFi calling"
             @change="onVoWiFiToggle"
           />
+        </div>
+      </div>
+      <div class="rounded-[var(--ui-radius-lg)] px-3 py-2 bg-[var(--ui-surface)]">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <span class="text-sm text-[var(--ui-text)]">
+            本机号码
+            <small class="block text-xs text-[var(--ui-muted)] font-normal">用于通知、短信和设备显示；留空使用自动识别</small>
+          </span>
+          <el-input
+            v-model="localPhoneOverride"
+            class="w-full sm:!w-[240px]"
+            placeholder="例如 +447700900123"
+            maxlength="16"
+            clearable
+            :disabled="fieldPending !== null"
+            @blur="saveLocalPhoneOverride"
+            @keyup.enter="onLocalPhoneEnter"
+          />
+        </div>
+        <div v-if="fieldPending === 'local_phone_override'" class="mt-1 text-xs text-[var(--ui-muted)]">正在保存...</div>
+        <div v-if="fieldError && errorField === 'local_phone_override'" role="alert" class="mt-1 text-xs text-orange-500">
+          {{ fieldError }}，请重试
         </div>
       </div>
       <div class="text-xs leading-5 text-[var(--ui-muted)]">

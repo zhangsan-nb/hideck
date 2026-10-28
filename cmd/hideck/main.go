@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iniwex5/quectel-qmi-go/pkg/qmi"
+	enginelogger "github.com/iniwex5/vowifi-go/engine/logger"
 	"github.com/iniwex5/vowifi-go/runtimehost/carrier"
 	"github.com/iniwex5/vowifi-go/runtimehost/voicehost"
 	"github.com/yibaiba/hideck/internal/api"
@@ -31,6 +32,8 @@ import (
 	"github.com/yibaiba/hideck/internal/proxy/traffic"
 	"github.com/yibaiba/hideck/internal/upstreamproxy"
 	"github.com/yibaiba/hideck/internal/volte"
+	"github.com/yibaiba/hideck/internal/webdavarchive"
+	"go.uber.org/zap"
 
 	"github.com/yibaiba/hideck/internal/web"
 	"github.com/yibaiba/hideck/pkg/logger"
@@ -58,6 +61,11 @@ func main() {
 	})
 	// 将内置 slog 重定向到已就绪的系统日志框架
 	slog.SetDefault(slog.New(logger.NewSlogHandler(logger.ZapLogger())))
+	// The SWu/IKE engine logs to stderr on its own, so its lines never reached
+	// logs/app.log. Route it through the same console, file and SSE outputs.
+	// pkg/logger adds one caller skip for its own wrappers and the engine
+	// wrappers add theirs, so take one back to report the real caller.
+	enginelogger.Set(logger.ZapLogger().WithOptions(zap.AddCallerSkip(-1)))
 	logger.Info("HiDeck 模组管理器启动中...")
 
 	go func() {
@@ -237,7 +245,8 @@ func main() {
 	}
 	phoneService, err := phone.NewService(phone.ServiceOptions{
 		Gateway: phoneGateway, Store: db.NewVoiceCallStore(db.DB), Transcoder: audioTranscoder,
-		Notifier: callResultNotifier, RecordingDir: voiceRecordingDirectory,
+		PromptDecoder: audioTranscoder,
+		Notifier:      callResultNotifier, RecordingDir: voiceRecordingDirectory,
 		WebRTCUDPAddress: cfg.Server.WebRTCUDPAddress, WebRTCPublicHost: cfg.Server.WebRTCPublicHost,
 		ICEServers:     cfg.Server.ICEServers,
 		RealtimeCodecs: availableRealtimeCodecs(audioTranscoder),
@@ -245,12 +254,25 @@ func main() {
 			return audioTranscoder.NewRealtimeCodec(codec, fmtp)
 		},
 		ResolveICCID: pool.CurrentICCIDForDevice,
+		AutoAnswer: phone.AutoAnswerConfig{
+			AudioPath: cfg.System.AutoAnswer.AudioFile,
+			Devices:   phoneAutoAnswerDevices(cfg.System.AutoAnswer.Devices),
+		},
 	})
 	if err != nil {
 		log.Fatalf("初始化电话媒体服务失败: %v", err)
 	}
 
 	apiServer := api.New(cfg, pool, staticFS, proxyMgr, voiceGW, notifyMgr, configPath)
+	archiveManager, err := webdavarchive.NewManager(webdavarchive.ManagerOptions{
+		Store: webdavarchive.NewDatabaseStore(db.DB), RecordingDir: voiceRecordingDirectory,
+		Config: archiveRuntimeConfig(cfg.Archive),
+	})
+	if err != nil {
+		log.Fatalf("初始化 WebDAV 归档服务失败: %v", err)
+	}
+	archiveManager.Start(context.Background())
+	apiServer.SetArchiveManager(archiveManager)
 	if notifyMgr != nil {
 		notifyMgr.StartCommandReceivers()
 	}
@@ -340,6 +362,26 @@ func main() {
 	}
 
 	logger.Info("再见!")
+}
+
+func archiveRuntimeConfig(value config.ArchiveConfig) webdavarchive.RuntimeConfig {
+	return webdavarchive.RuntimeConfig{
+		Enabled: value.Enabled, Endpoint: value.Endpoint, Username: value.Username,
+		Password: value.Password, BasePath: value.BasePath,
+		Interval: time.Duration(value.IntervalHours) * time.Hour, RetentionDays: value.RetentionDays,
+		AutoCleanup: value.AutoCleanup, IncludeSMS: value.IncludeSMS,
+		IncludeCalls: value.IncludeCalls, IncludeRecordings: value.IncludeRecordings,
+	}
+}
+
+func phoneAutoAnswerDevices(devices map[string]config.AutoAnswerDeviceConfig) map[string]phone.AutoAnswerDeviceConfig {
+	result := make(map[string]phone.AutoAnswerDeviceConfig, len(devices))
+	for deviceID, deviceConfig := range devices {
+		result[deviceID] = phone.AutoAnswerDeviceConfig{
+			Enabled: deviceConfig.Enabled, Delay: time.Duration(deviceConfig.DelaySeconds) * time.Second,
+		}
+	}
+	return result
 }
 
 func availableRealtimeCodecs(transcoder *audiotranscode.Transcoder) []string {

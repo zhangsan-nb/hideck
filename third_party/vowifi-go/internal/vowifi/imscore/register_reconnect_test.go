@@ -62,7 +62,8 @@ func TestProtectedRegistrationResetRequestsFreshRuntime(t *testing.T) {
 	}
 	select {
 	case runtimeErr := <-svc.RegistrationErrors():
-		if runtimeErr == nil || !strings.Contains(runtimeErr.Error(), "registration SIP stream closed") {
+		// Either the reader or an in-flight subscription writer can observe the reset first.
+		if !IsFatalNetworkError(runtimeErr) {
 			t.Fatalf("runtime reconnect error = %v", runtimeErr)
 		}
 	case <-ctx.Done():
@@ -147,12 +148,34 @@ func serveInitialProtectedRegistration(
 		return "", err
 	}
 	close(ready)
-	probe := make([]byte, 4)
-	if _, err := io.ReadFull(reader, probe); err != nil {
+	if err := respondToSubscriptionsUntilPing(conn, reader); err != nil {
 		return "", err
 	}
-	if string(probe) != "\r\n\r\n" {
-		return "", fmt.Errorf("request during reset = %q, want RFC 5626 CRLF ping", string(probe))
-	}
 	return sipHeaderValue(registered, "Authorization"), nil
+}
+
+func respondToSubscriptionsUntilPing(conn net.Conn, reader *bufio.Reader) error {
+	const ping = "\r\n\r\n"
+	for {
+		prefix, err := reader.Peek(len(ping))
+		if err != nil {
+			return err
+		}
+		if string(prefix) == ping {
+			_, err := io.ReadFull(reader, make([]byte, len(ping)))
+			return err
+		}
+		// Registration and MWI subscribe independently and may precede the ping.
+		request, err := readSIPStreamMessage(reader)
+		if err != nil {
+			return err
+		}
+		event := sipHeaderValue(request, "Event")
+		if !strings.HasPrefix(request, "SUBSCRIBE ") || (event != "reg" && event != "message-summary") {
+			return fmt.Errorf("request during reset is not a subscription or RFC 5626 CRLF ping")
+		}
+		if _, err := conn.Write([]byte(registerWireResponse(request, 200, ""))); err != nil {
+			return err
+		}
+	}
 }

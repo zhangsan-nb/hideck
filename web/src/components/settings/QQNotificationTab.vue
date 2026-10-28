@@ -7,7 +7,7 @@ import NotificationQrConnect from './NotificationQrConnect.vue'
 const settingsStore = useSettingsStore()
 const { qqForm } = storeToRefs(settingsStore)
 const qr = useNotificationQR('qq', {
-  onApplied: async () => { await settingsStore.fetchNotifications({ silent: true }) }
+  onApplied: async () => { await settingsStore.refreshNotificationChannel('qq') }
 })
 </script>
 

@@ -295,11 +295,7 @@ func TestInitialEAPIKEAuthOmitsAuthAndEAP(t *testing.T) {
 		t.Fatalf("initial CP request address families: %+v", cp.Attributes)
 	}
 	for index, attribute := range cp.Attributes {
-		wantValueLength := 0
-		if attribute.Type == ikev2.CPAttrIP6Address {
-			wantValueLength = net.IPv6len + 1
-		}
-		if attribute.Type != wantCPTypes[index] || len(attribute.Value) != wantValueLength {
+		if attribute.Type != wantCPTypes[index] || len(attribute.Value) != 0 {
 			t.Fatalf("initial CP attribute[%d] = %+v, want type %d", index, attribute, wantCPTypes[index])
 		}
 	}

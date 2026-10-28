@@ -401,13 +401,14 @@ func (w *Worker) SendSMS(phone, message string) error {
 }
 
 func (w *Worker) SendSMSWithOptions(phone, message string, opts smscodec.SubmitOptions) error {
-	if w.Pool != nil {
-		release, err := w.Pool.AcquireDeviceOperation(w.ID)
-		if err != nil {
-			return err
-		}
-		defer release()
+	if w == nil || w.Pool == nil {
+		return errors.New("短信发送需要有效的设备池")
 	}
+	release, err := w.Pool.acquireOutboundOperation(w)
+	if err != nil {
+		return err
+	}
+	defer release()
 	check := w.Pool.outboundOwnerCheck(w)
 	if err := w.Pool.authorizeSMS(context.Background(), outboundSMSRequest{Worker: w, To: phone, Text: message, Options: opts}); err != nil {
 		return err
@@ -507,6 +508,7 @@ func (w *Worker) processSMSWithIdentity(identity SMSIdentity, message inboundSMS
 		logger.Info(fmt.Sprintf("[%s] 短信已过滤（运营商 OTA/不可解码二进制包）", w.ID), "sender", message.Sender)
 		return nil
 	}
+	message.Timestamp = correctSMSCTimestamp(w.ID, identity.IMSI, message.Timestamp, time.Now())
 
 	if err := w.persistReceivedSMS(identity, message); err != nil {
 		return fmt.Errorf("保存短信到数据库失败: %w", err)

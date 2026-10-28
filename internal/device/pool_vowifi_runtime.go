@@ -6,8 +6,14 @@ import (
 	"time"
 
 	qmimanager "github.com/iniwex5/quectel-qmi-go/pkg/manager"
+	"github.com/yibaiba/hideck/internal/vowifihost"
 	"github.com/yibaiba/hideck/pkg/logger"
 )
+
+type voWiFiReadyStart struct {
+	owner               workerLifecycleOwner
+	lifecycleGeneration uint64
+}
 
 func waitForCondition(ctx context.Context, interval time.Duration, check func() bool) error {
 	if check() {
@@ -147,19 +153,52 @@ func (p *Pool) IsSwitching(deviceID string) bool {
 	return p.IsESIMSwitching(deviceID)
 }
 
-// enableVoWiFiWhenReady waits for readiness, then submits enable through the lifecycle controller.
-// Do not call this from controller run paths that already hold the per-device lifecycle mutex.
-func (p *Pool) enableVoWiFiWhenReady(deviceID string, timeout time.Duration, reason string) error {
+func (p *Pool) captureVoWiFiReadyStart(worker *Worker) voWiFiReadyStart {
+	if p == nil || worker == nil {
+		return voWiFiReadyStart{}
+	}
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
+	if !p.workerLifecycleOwnerCurrent(owner) {
+		return voWiFiReadyStart{}
+	}
+	generation := p.voWiFiHost().CurrentLifecycleGeneration(worker.ID)
+	if generation == 0 {
+		generation = p.voWiFiHost().NextLifecycleGeneration(worker.ID)
+	}
+	return voWiFiReadyStart{owner: owner, lifecycleGeneration: generation}
+}
+
+// enableVoWiFiWhenReady waits for the captured Worker, then submits an
+// ownership-bound lifecycle command. Removal invalidates its generation.
+func (p *Pool) enableVoWiFiWhenReady(start voWiFiReadyStart, timeout time.Duration, reason string) error {
+	if !p.workerLifecycleOwnerCurrent(start.owner) || start.lifecycleGeneration == 0 {
+		return fmt.Errorf("等待启动 VoWiFi 的设备已被移除或替换")
+	}
+	deviceID := start.owner.worker.ID
 	if err := p.waitQMICoreReady(deviceID, timeout); err != nil {
 		return fmt.Errorf("等待设备 %s 身份就绪失败(%s): %w", deviceID, reason, err)
 	}
 	if err := p.waitWorkerReady(deviceID, timeout); err != nil {
 		return fmt.Errorf("等待设备 %s 就绪失败(%s): %w", deviceID, reason, err)
 	}
-	return p.EnableVoWiFi(deviceID)
+	if !p.workerLifecycleOwnerCurrent(start.owner) {
+		return fmt.Errorf("设备 %s 就绪期间已被移除或替换", deviceID)
+	}
+	if err := p.enableVoWiFi(deviceID, start.lifecycleGeneration); err != nil {
+		return err
+	}
+	if !p.workerLifecycleOwnerCurrent(start.owner) ||
+		p.voWiFiHost().CurrentLifecycleGeneration(deviceID) != start.lifecycleGeneration {
+		return fmt.Errorf("设备 %s 的 VoWiFi 自动启动已因设备生命周期变化而失效", deviceID)
+	}
+	return nil
 }
 
 func (p *Pool) EnableVoWiFi(deviceID string) error {
+	return p.enableVoWiFi(deviceID, 0)
+}
+
+func (p *Pool) enableVoWiFi(deviceID string, lifecycleGeneration uint64) error {
 	if err := p.CheckMBNIdle(deviceID); err != nil {
 		return err
 	}
@@ -190,5 +229,13 @@ func (p *Pool) EnableVoWiFi(deviceID string) error {
 			return err
 		}
 	}
-	return p.voWiFiHost().Enable(p.ctx, deviceID)
+	if lifecycleGeneration == 0 {
+		return p.voWiFiHost().Enable(p.ctx, deviceID)
+	}
+	return p.voWiFiHost().SubmitLifecycle(p.ctx, vowifihost.LifecycleCommand{
+		DeviceID:   deviceID,
+		Kind:       vowifihost.LifecycleCommandEnable,
+		Reason:     "enable_when_ready",
+		Generation: lifecycleGeneration,
+	})
 }

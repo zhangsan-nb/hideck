@@ -87,6 +87,12 @@ func (s *Session) activateChildSARuntime(runtime *childSARuntime) error {
 
 func (s *Session) installChildSARuntime(runtime *childSARuntime) {
 	s.childSAMu.Lock()
+	s.installChildSARuntimeLocked(runtime)
+	s.childSAMu.Unlock()
+	s.logChildKeys(childKeysFromRuntime(runtime))
+}
+
+func (s *Session) installChildSARuntimeLocked(runtime *childSARuntime) {
 	oldOutbound, oldDH := s.espOutboundSA, s.childDH
 	oldDHSecret := s.childDHSecret
 	if s.espInboundSAs == nil {
@@ -108,8 +114,6 @@ func (s *Session) installChildSARuntime(runtime *childSARuntime) {
 	if oldDH != nil && oldDH != runtime.dh {
 		enginecrypto.Wipe(oldDH.SharedKey)
 	}
-	s.childSAMu.Unlock()
-	s.logChildKeys(childKeysFromRuntime(runtime))
 }
 
 func (s *Session) deleteOldChildSA(remoteSPI, localSPI uint32) error {

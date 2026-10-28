@@ -70,13 +70,18 @@ func (e *ErrInvalidKEGroup) Error() string {
 // proposal; the wrapped value is the rejecting IKEv2 notify type.
 type createChildSARejectError struct {
 	NotifyType uint16
+	NotifyData []byte
 }
 
 func (e *createChildSARejectError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return fmt.Sprintf("child SA proposal rejected: %d (%s)", e.NotifyType, notifyTypeName(e.NotifyType))
+	message := fmt.Sprintf("child SA proposal rejected: %d (%s)", e.NotifyType, notifyTypeName(e.NotifyType))
+	if len(e.NotifyData) > 0 {
+		message += fmt.Sprintf(" data=%x", e.NotifyData)
+	}
+	return message
 }
 
 // notifyTypeName maps an IKEv2 notify type to its name.

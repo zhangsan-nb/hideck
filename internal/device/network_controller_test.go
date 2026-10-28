@@ -12,14 +12,16 @@ import (
 )
 
 type fakeController struct {
-	connected      bool
-	connErr        error
-	rotated        int
-	dataInterface  string
-	connectHook    func()
-	disconnectHook func()
-	configChanged  bool
-	appliedConfig  config.DeviceConfig
+	connected       bool
+	connErr         error
+	rotated         int
+	dataInterface   string
+	connectHook     func()
+	disconnectHook  func()
+	configChanged   bool
+	appliedConfig   config.DeviceConfig
+	publicIPStarted chan struct{}
+	publicIPRelease <-chan struct{}
 }
 
 func (f *fakeController) ApplyNetworkConfig(cfg config.DeviceConfig) (bool, error) {
@@ -53,9 +55,17 @@ func (f *fakeController) RotateIP() error {
 	f.rotated++
 	return nil
 }
-func (f *fakeController) GetPrivateIP() string                        { return "10.1.2.3" }
-func (f *fakeController) GetPrivateIPv6() string                      { return "" }
-func (f *fakeController) GetPublicIPv4AndV6NoCache() (string, string) { return "203.0.113.1", "" }
+func (f *fakeController) GetPrivateIP() string   { return "10.1.2.3" }
+func (f *fakeController) GetPrivateIPv6() string { return "" }
+func (f *fakeController) GetPublicIPv4AndV6NoCache() (string, string) {
+	if f.publicIPStarted != nil {
+		close(f.publicIPStarted)
+	}
+	if f.publicIPRelease != nil {
+		<-f.publicIPRelease
+	}
+	return "203.0.113.1", ""
+}
 
 func TestNetControllerPrefersQMIThenMBIM(t *testing.T) {
 	w := &Worker{}

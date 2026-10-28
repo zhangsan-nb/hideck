@@ -27,9 +27,10 @@ type Host interface {
 	StopSoftwareIMS(deviceID string) error
 	SetNativeIMS(ctx context.Context, deviceID string, enabled bool) error
 	EnsureIMSClients(ctx context.Context, deviceID string) error
+	EnsureVoiceIndications(ctx context.Context, deviceID string) error
 	ReleaseIMSClients(deviceID string) error
-	OnIMSRegistration(deviceID string, handler func(*qmi.IMSARegistrationStatus)) error
-	OnIMSServices(deviceID string, handler func(*qmi.IMSAServicesStatus)) error
+	SubscribeIMSRegistration(deviceID string, handler func(*qmi.IMSARegistrationStatus)) (func(), error)
+	SubscribeIMSServices(deviceID string, handler func(*qmi.IMSAServicesStatus)) (func(), error)
 	IMSAStatus(ctx context.Context, deviceID string) (Registration, error)
 	AudioDevice(deviceID string) string
 	VOICEDial(ctx context.Context, deviceID, number string) (uint8, error)
@@ -40,5 +41,5 @@ type Host interface {
 	VOICEStartContinuousDTMF(ctx context.Context, deviceID string, callID, digit uint8) error
 	VOICEStopContinuousDTMF(ctx context.Context, deviceID string, callID uint8) error
 	VOICEGetAllCallInfo(ctx context.Context, deviceID string) (*qmi.VoiceAllCallInfo, error)
-	OnVoiceStatus(deviceID string, handler func(*qmi.VoiceAllCallInfo)) error
+	SubscribeVoiceStatus(deviceID string, handler func(*qmi.VoiceAllCallInfo)) (func(), error)
 }

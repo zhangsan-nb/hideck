@@ -46,7 +46,9 @@ devices:
 		WorkerStarted:    true,
 		HardwareVerified: true,
 	}}
-	server := &Server{configPath: path, backendSwitch: switcher}
+	pool := device.NewPool(&config.Config{})
+	t.Cleanup(func() { _ = pool.Shutdown() })
+	server := &Server{pool: pool, configPath: path, backendSwitch: switcher}
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -62,7 +64,7 @@ devices:
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if switcher.calls != 1 || switcher.request.Target != "mbim" {
+	if switcher.calls != 1 || switcher.request.Target != "mbim" || !switcher.request.MutationLeaseHeld {
 		t.Fatalf("switcher calls=%d request=%+v", switcher.calls, switcher.request)
 	}
 	if switcher.request.Current.DeviceBackend != "qmi" || switcher.request.Desired.DeviceBackend != "mbim" {
@@ -128,7 +130,8 @@ devices:
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if switcher.calls != 1 || switcher.request.Target != "mbim" || switcher.request.Desired.Name != "new" {
+	if switcher.calls != 1 || switcher.request.Target != "mbim" || switcher.request.Desired.Name != "new" ||
+		!switcher.request.MutationLeaseHeld {
 		t.Fatalf("switcher calls=%d request=%+v", switcher.calls, switcher.request)
 	}
 }

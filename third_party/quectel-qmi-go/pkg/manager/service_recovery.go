@@ -155,7 +155,7 @@ func (m *Manager) detectTimeoutStorm(service string) {
 	if m.globalTimeoutServices == nil {
 		m.globalTimeoutServices = make(map[string]time.Time)
 	}
-	
+
 	for svc, t := range m.globalTimeoutServices {
 		if now.Sub(t) > stormWindow {
 			delete(m.globalTimeoutServices, svc)
@@ -811,6 +811,10 @@ func (m *Manager) ensureVOICEService() (*qmi.VOICEService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("allocate VOICE client failed: %w", err)
 	}
+	if err := m.restoreVOICEIndications(allocated); err != nil {
+		_ = allocated.Close()
+		return nil, err
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -821,6 +825,32 @@ func (m *Manager) ensureVOICEService() (*qmi.VOICEService, error) {
 	m.voice = allocated
 	m.log.Info("VOICE service lazily allocated")
 	return allocated, nil
+}
+
+// registerVOICEIndicationsOnService deliberately bypasses VOICE recovery: it
+// is called while voiceRecoveryMu is held and recursively recovering here
+// would deadlock.
+func (m *Manager) registerVOICEIndicationsOnService(ctx context.Context, voice *qmi.VOICEService, cfg qmi.VoiceIndicationRegistration) error {
+	if m.registerVOICEIndications != nil {
+		return m.registerVOICEIndications(ctx, cfg)
+	}
+	if voice == nil {
+		return ErrServiceNotReady("VOICE")
+	}
+	return voice.IndicationRegister(ctx, cfg)
+}
+
+func (m *Manager) restoreVOICEIndications(voice *qmi.VOICEService) error {
+	cfg, enabled := m.voiceIndicationRegistration()
+	if !enabled {
+		return nil
+	}
+	ctx, cancel := contextWithMaxTimeout(context.Background(), m.cfg.Timeouts.IndicationRegister)
+	defer cancel()
+	if err := m.registerVOICEIndicationsOnService(ctx, voice, cfg); err != nil {
+		return fmt.Errorf("restore VOICE indications: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) rebindVOICEService(reason string) (*qmi.VOICEService, error) {
@@ -849,6 +879,10 @@ func (m *Manager) rebindVOICEService(reason string) (*qmi.VOICEService, error) {
 	allocated, err := qmi.NewVOICEService(client)
 	if err != nil {
 		return nil, fmt.Errorf("allocate VOICE client failed: %w", err)
+	}
+	if err := m.restoreVOICEIndications(allocated); err != nil {
+		_ = allocated.Close()
+		return nil, err
 	}
 
 	m.mu.Lock()

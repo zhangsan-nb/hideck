@@ -18,6 +18,15 @@ test('an explicit reception failure stays failed', () => {
   assert.equal(smsReceptionDetail(runtime), '')
 })
 
+test('a closed or timed-out port-s is neutral until the P-CSCF reconnects', () => {
+  const runtime = { ims_ready: true, sms_ready: false, sms_mo_ready: true, sms_rx_pending: false,
+    sms_ready_reason: 'IMS registered; port-s closed or timed out, awaiting the P-CSCF reconnect' }
+  assert.deepEqual(createDashboardStages(runtime)[5], { key: 'SMS RX', ready: undefined, pending: true })
+  assert.equal(smsReceptionDetail(runtime), '端口已断，等运营商连入')
+  assert.equal(smsReceptionPending({ ...runtime, ims_ready: false }), false)
+  assert.equal(createDashboardStages({ ...runtime, sms_ready_reason: 'IMS SMS receiver is not ready' })[5]?.ready, false)
+})
+
 test('verified registered-flow reception describes its actual route', () => {
   const runtime = { ims_ready: true, sms_ready: true, sms_rx_pending: false,
     sms_ready_reason: 'IMS SMS receiver verified on registered TCP flow' }

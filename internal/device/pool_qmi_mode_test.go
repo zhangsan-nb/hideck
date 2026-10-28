@@ -796,12 +796,13 @@ func TestBuildVoWiFiStartProfileUsesLiveIMSIOnly(t *testing.T) {
 		ID:      "dev1",
 		Backend: &workerStatusBackendStub{mode: backend.BackendQMI},
 	}
+	registerVoWiFiProfileWorkerForTest(p, w)
 	w.cacheMu.Lock()
 	w.state.Identity.IMSI = "460001234567890"
 	w.state.Identity.IMEI = "861234567890123"
 	w.cacheMu.Unlock()
 
-	_, err := p.buildVoWiFiStartProfile(w, "trace-live")
+	_, err := p.buildVoWiFiStartProfile(context.Background(), w, "trace-live")
 	if err == nil || !strings.Contains(err.Error(), "实时 IMSI 为空") {
 		t.Fatalf("buildVoWiFiStartProfile() err=%v, want 实时 IMSI 为空", err)
 	}
@@ -811,14 +812,85 @@ type vowifiLiveIdentityBackendStub struct {
 	workerSMSCBackendStub
 	liveIMSI  string
 	liveICCID string
+	afterIMSI func()
 }
 
 func (s *vowifiLiveIdentityBackendStub) GetIMSILive(ctx context.Context) (string, error) {
+	if s.afterIMSI != nil {
+		s.afterIMSI()
+	}
 	return s.liveIMSI, nil
 }
 
 func (s *vowifiLiveIdentityBackendStub) GetICCIDLive(ctx context.Context) (string, error) {
 	return s.liveICCID, nil
+}
+
+type vowifiIdentitySnapshotBackendStub struct {
+	*vowifiLiveIdentityBackendStub
+	snapshot      liveSIMIdentitySnapshot
+	snapshotReads int
+}
+
+func (s *vowifiIdentitySnapshotBackendStub) ReadSIMIdentityLive(context.Context) (liveSIMIdentitySnapshot, error) {
+	s.snapshotReads++
+	return s.snapshot, nil
+}
+
+func TestBuildVoWiFiStartProfilePrefersAtomicIdentitySnapshot(t *testing.T) {
+	p := NewPool(&config.Config{})
+	base := &vowifiLiveIdentityBackendStub{
+		workerSMSCBackendStub: workerSMSCBackendStub{
+			workerStatusBackendStub: workerStatusBackendStub{mode: backend.BackendQMI, nativeMCC: "234", nativeMNC: "15"},
+			seq:                     []smscResult{{value: "+447785016005"}},
+		},
+		liveIMSI: "stale-imsi", liveICCID: "stale-iccid",
+	}
+	backend := &vowifiIdentitySnapshotBackendStub{
+		vowifiLiveIdentityBackendStub: base,
+		snapshot: liveSIMIdentitySnapshot{
+			ICCID: "8944100000000000801", IMSI: "234150000000801",
+		},
+	}
+	worker := &Worker{ID: "snapshot-device", Backend: backend}
+	registerVoWiFiProfileWorkerForTest(p, worker)
+
+	profile, err := p.buildVoWiFiStartProfile(context.Background(), worker, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ICCID != backend.snapshot.ICCID || profile.IMSI != backend.snapshot.IMSI {
+		t.Fatalf("profile identity=%s/%s want snapshot=%s/%s", profile.ICCID, profile.IMSI, backend.snapshot.ICCID, backend.snapshot.IMSI)
+	}
+	if backend.snapshotReads != 1 {
+		t.Fatalf("snapshot reads=%d want 1", backend.snapshotReads)
+	}
+}
+
+func TestBuildVoWiFiStartProfileRejectsIdentityChangeDuringPairedRead(t *testing.T) {
+	p := NewPool(&config.Config{})
+	backend := &vowifiLiveIdentityBackendStub{
+		workerSMSCBackendStub: workerSMSCBackendStub{
+			workerStatusBackendStub: workerStatusBackendStub{mode: backend.BackendQMI, nativeMCC: "234", nativeMNC: "15"},
+			seq:                     []smscResult{{value: "+447785016005"}},
+		},
+		liveIMSI: "234150000000811", liveICCID: "8944100000000000811",
+	}
+	worker := &Worker{ID: "changing-device", Backend: backend}
+	worker.cacheMu.Lock()
+	worker.state.Identity.ICCID = "8944100000000000810"
+	worker.state.Identity.Generation = 7
+	worker.cacheMu.Unlock()
+	backend.afterIMSI = func() {
+		backend.afterIMSI = nil
+		worker.BeginSIMIdentityTransition("8944100000000000811", "test_swap")
+	}
+	registerVoWiFiProfileWorkerForTest(p, worker)
+
+	_, err := p.buildVoWiFiStartProfile(context.Background(), worker, "identity-change")
+	if !errors.Is(err, errPolicyOwnerChanged) {
+		t.Fatalf("buildVoWiFiStartProfile() error=%v want owner changed", err)
+	}
 }
 
 func TestBuildVoWiFiStartProfileUsesLiveIMSIAndBackendHomeMCCMNC(t *testing.T) {
@@ -828,17 +900,18 @@ func TestBuildVoWiFiStartProfileUsesLiveIMSIAndBackendHomeMCCMNC(t *testing.T) {
 			workerStatusBackendStub: workerStatusBackendStub{mode: backend.BackendQMI},
 			seq:                     []smscResult{{value: "+8613800250500"}},
 		},
-		liveIMSI: "530240209434655",
+		liveIMSI: "530240209434655", liveICCID: "8964240000000000001",
 	}
 	b.nativeMCC = "530"
 	b.nativeMNC = "24"
 	w := &Worker{ID: "dev1", Backend: b}
+	registerVoWiFiProfileWorkerForTest(p, w)
 	w.cacheMu.Lock()
 	w.state.Identity.IMSI = "460001234567890"
 	w.state.Identity.IMEI = "861234567890123"
 	w.cacheMu.Unlock()
 
-	profile, err := p.buildVoWiFiStartProfile(w, "trace-live-ok")
+	profile, err := p.buildVoWiFiStartProfile(context.Background(), w, "trace-live-ok")
 	if err != nil {
 		t.Fatalf("buildVoWiFiStartProfile() error=%v", err)
 	}
@@ -848,6 +921,25 @@ func TestBuildVoWiFiStartProfileUsesLiveIMSIAndBackendHomeMCCMNC(t *testing.T) {
 	norm := identity.NormalizeProfile(identity.Profile{MCC: profile.MCC, MNC: profile.MNC})
 	if norm.MCC != "530" || norm.MNC != "24" {
 		t.Fatalf("profile MCC/MNC=%s/%s want 530/24", norm.MCC, norm.MNC)
+	}
+}
+
+func TestBuildVoWiFiStartProfileRequiresLiveICCID(t *testing.T) {
+	p := NewPool(&config.Config{})
+	b := &vowifiLiveIdentityBackendStub{
+		workerSMSCBackendStub: workerSMSCBackendStub{
+			workerStatusBackendStub: workerStatusBackendStub{mode: backend.BackendQMI},
+		},
+		liveIMSI: "234336575868434",
+	}
+	b.nativeMCC = "234"
+	b.nativeMNC = "33"
+	w := &Worker{ID: "dev1", Backend: b}
+	registerVoWiFiProfileWorkerForTest(p, w)
+
+	_, err := p.buildVoWiFiStartProfile(context.Background(), w, "trace-live-iccid")
+	if err == nil || !strings.Contains(err.Error(), "实时 ICCID 为空") {
+		t.Fatalf("buildVoWiFiStartProfile() err=%v, want 实时 ICCID 为空", err)
 	}
 }
 
@@ -862,9 +954,10 @@ func TestBuildVoWiFiStartProfileUsesLiveHomeMCCMNCInsteadOfStaleCache(t *testing
 			},
 			seq: []smscResult{{value: "+8613800250500"}},
 		},
-		liveIMSI: "234336575868434",
+		liveIMSI: "234336575868434", liveICCID: "8944330000000000001",
 	}
 	w := &Worker{ID: "dev1", Backend: b}
+	registerVoWiFiProfileWorkerForTest(p, w)
 	w.cacheMu.Lock()
 	w.state.Identity.IMSI = "234336575868434"
 	w.state.Identity.IMEI = "861234567890123"
@@ -872,7 +965,7 @@ func TestBuildVoWiFiStartProfileUsesLiveHomeMCCMNCInsteadOfStaleCache(t *testing
 	w.state.Identity.NativeMNC = "030"
 	w.cacheMu.Unlock()
 
-	profile, err := p.buildVoWiFiStartProfile(w, "trace-home-plmn")
+	profile, err := p.buildVoWiFiStartProfile(context.Background(), w, "trace-home-plmn")
 	if err != nil {
 		t.Fatalf("buildVoWiFiStartProfile() error=%v", err)
 	}
@@ -893,17 +986,24 @@ func TestBuildVoWiFiStartProfileRequiresCachedHomeMCCMNC(t *testing.T) {
 			},
 			seq: []smscResult{{value: "+8613800250500"}},
 		},
-		liveIMSI: "234336575868434",
+		liveIMSI: "234336575868434", liveICCID: "8944330000000000001",
 	}
 	w := &Worker{ID: "dev1", Backend: b}
+	registerVoWiFiProfileWorkerForTest(p, w)
 	w.cacheMu.Lock()
 	w.state.Identity.IMSI = "234336575868434"
 	w.state.Identity.IMEI = "861234567890123"
 	w.cacheMu.Unlock()
 
-	if _, err := p.buildVoWiFiStartProfile(w, "trace-missing-home-plmn"); err == nil {
+	if _, err := p.buildVoWiFiStartProfile(context.Background(), w, "trace-missing-home-plmn"); err == nil {
 		t.Fatal("buildVoWiFiStartProfile() err=nil, want missing home MCC/MNC error")
 	}
+}
+
+func registerVoWiFiProfileWorkerForTest(p *Pool, worker *Worker) {
+	p.mu.Lock()
+	p.workers[worker.ID] = worker
+	p.mu.Unlock()
 }
 
 func TestRefreshIdentityLiveCachesHomeMCCMNCThroughSIMMetadata(t *testing.T) {

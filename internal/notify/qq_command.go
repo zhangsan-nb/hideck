@@ -25,6 +25,39 @@ type qqCommandReply struct {
 	attachments []CommandAttachment
 }
 
+func (q *QQChannel) SendNotificationWithAttachments(ctx NotificationContext, attachments []CommandAttachment) error {
+	if q == nil || q.app == nil {
+		return nil
+	}
+	recipients := q.snapshotAllowed()
+	if len(recipients) == 0 {
+		return ErrNoQQRecipients
+	}
+	deliveries := make([]qqbot.Delivery, 0, len(attachments))
+	for _, attachment := range attachments {
+		delivery, err := qqVoiceDelivery(attachment)
+		if err != nil {
+			return err
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	var sendErrors []error
+	for _, recipient := range recipients {
+		for _, delivery := range deliveries {
+			delivery.To = recipient
+			if _, err := q.app.Send(context.Background(), delivery); err != nil {
+				sendErrors = append(sendErrors, newQQDeliveryError(err, recipient))
+			}
+		}
+		if _, err := q.app.Send(context.Background(), qqbot.Delivery{
+			To: recipient, Kind: qqbot.PlainText, Body: ctx.Text,
+		}); err != nil {
+			sendErrors = append(sendErrors, newQQDeliveryError(err, recipient))
+		}
+	}
+	return errors.Join(sendErrors...)
+}
+
 func (c *qqCommandContext) Reply(text string) {
 	if c == nil || c.conversation == nil {
 		return

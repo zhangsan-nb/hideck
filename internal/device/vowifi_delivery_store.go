@@ -30,8 +30,23 @@ func (vowifiDeliveryStore) DeleteIMSSubscriptionRejections(identity string) erro
 	return db.DeleteIMSSubscriptionRejections(identity)
 }
 
-func (vowifiDeliveryStore) CreateSMSDelivery(messageID, imsi, deviceID, peer, content string, partsTotal int, at time.Time) error {
-	return db.CreateSMSDelivery(messageID, imsi, deviceID, peer, content, partsTotal, at)
+func (vowifiDeliveryStore) CreateSMSDelivery(
+	messageID, imsi, deviceID, peer, content string,
+	partsTotal int,
+	at time.Time,
+) error {
+	return db.CreateSMSDelivery(db.SMSDeliveryCreate{
+		MessageID: messageID, IMSI: imsi, DeviceID: deviceID,
+		Peer: peer, Content: content, PartsTotal: partsTotal, At: at,
+	})
+}
+
+func (vowifiDeliveryStore) CreateSMSDeliveryForIdentity(record messaging.DeliveryRecord) error {
+	return db.CreateSMSDelivery(db.SMSDeliveryCreate{
+		MessageID: record.MessageID, ICCID: record.ICCID, IMSI: record.IMSI,
+		DeviceID: record.DeviceID, Peer: record.Peer, Content: record.Content,
+		PartsTotal: record.PartsTotal, At: record.At,
+	})
 }
 
 func (vowifiDeliveryStore) UpsertSMSDeliveryPart(messageID string, partNo int, callID string, rpMR int, state string, sentAt time.Time) error {
@@ -51,14 +66,19 @@ func (vowifiDeliveryStore) LoadInboundFragments(
 	owner messaging.InboundFragmentOwner,
 ) ([]messaging.StoredInboundFragment, error) {
 	rows, err := db.LoadSMSInboundFragments(db.SMSInboundFragmentScope{
-		DeviceID: owner.DeviceID, IMSI: owner.IMSI,
+		DeviceID: owner.DeviceID, ICCID: owner.ICCID, IMSI: owner.IMSI,
 	})
 	if err != nil {
 		return nil, err
 	}
 	result := make([]messaging.StoredInboundFragment, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, inboundFragmentFromDB(row))
+		// The rows already match the owner's canonical ICCID and IMSI. Hand
+		// the owner back as given so imscore's exact owner check accepts
+		// fragments saved on another device or under a padded ICCID.
+		fragment := inboundFragmentFromDB(row)
+		fragment.Scope.Owner = owner
+		result = append(result, fragment)
 	}
 	return result, nil
 }
@@ -102,7 +122,8 @@ func (vowifiDeliveryStore) MarkInboundFragmentsDegraded(
 
 func fragmentScopeToDB(scope messaging.InboundFragmentScope) db.SMSInboundFragmentScope {
 	return db.SMSInboundFragmentScope{
-		DeviceID: scope.Owner.DeviceID, IMSI: scope.Owner.IMSI, SessionKey: scope.SessionKey,
+		DeviceID: scope.Owner.DeviceID, ICCID: scope.Owner.ICCID,
+		IMSI: scope.Owner.IMSI, SessionKey: scope.SessionKey,
 	}
 }
 
@@ -120,7 +141,7 @@ func inboundFragmentToDB(fragment messaging.InboundFragment) db.SMSInboundFragme
 func inboundFragmentFromDB(row db.SMSInboundFragment) messaging.StoredInboundFragment {
 	return messaging.StoredInboundFragment{
 		Scope: messaging.InboundFragmentScope{
-			Owner:      messaging.InboundFragmentOwner{DeviceID: row.DeviceID, IMSI: row.IMSI},
+			Owner:      messaging.InboundFragmentOwner{DeviceID: row.DeviceID, ICCID: row.ICCID, IMSI: row.IMSI},
 			SessionKey: row.SessionKey,
 		},
 		Fragment: inboundFragmentValueFromDB(row),
@@ -173,6 +194,7 @@ func (vowifiDeliveryStore) GetSMSDeliveryStatus(messageID string) (*messaging.De
 	out := &messaging.DeliveryStatus{
 		MessageID:  status.MessageID,
 		IMSI:       status.IMSI,
+		ICCID:      status.ICCID,
 		DeviceID:   status.DeviceID,
 		Peer:       status.Peer,
 		Content:    status.Content,

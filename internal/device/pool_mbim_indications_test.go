@@ -20,8 +20,10 @@ func TestBindMBIMStateIndicationsTriggersHandleSIMStatusEvent(t *testing.T) {
 	}
 	defer mc.Close()
 
-	p := &Pool{ctx: context.Background()}
+	p := NewPool(nil)
+	defer p.cancel()
 	w := &Worker{ID: "dev1", MBIMCore: mc}
+	p.AttachWorkerForTest(w)
 	p.bindMBIMStateIndications(w)
 
 	info := mbim.TestSubscriberReadyInfo(1, "460001234567890", "89860012345678901234")
@@ -35,6 +37,12 @@ func TestBindMBIMStateIndicationsTriggersHandleSIMStatusEvent(t *testing.T) {
 		_, scheduled := p.simEventTimers["dev1"]
 		p.simEventMu.Unlock()
 		if scheduled {
+			p.deviceEventWakeMu.Lock()
+			_, wokeBeforeIdentityRefresh := p.deviceEventWakeups["dev1"]
+			p.deviceEventWakeMu.Unlock()
+			if wokeBeforeIdentityRefresh {
+				t.Fatal("SIM indication scheduled VoWiFi recovery before identity confirmation")
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -59,8 +67,10 @@ func TestBindMBIMSlotIndicationsWakesVoWiFiWithoutTouchingEsimMgr(t *testing.T) 
 	}
 	defer mc.Close()
 
-	p := &Pool{ctx: context.Background()}
+	p := NewPool(nil)
+	defer p.cancel()
 	w := &Worker{ID: "dev1", MBIMCore: mc}
+	p.AttachWorkerForTest(w)
 	p.bindMBIMSlotIndications(w)
 
 	info := mbim.TestSlotInfoStatusInfo(0, mbim.UICCSlotStateActiveEsim)
@@ -98,8 +108,10 @@ func TestBindMBIMHealthIndicationsRecordsHealthyAndSuspect(t *testing.T) {
 	}
 	defer mc.Close()
 
-	p := &Pool{ctx: context.Background()}
+	p := NewPool(nil)
+	defer p.cancel()
 	w := &Worker{ID: "dev1", MBIMCore: mc}
+	p.AttachWorkerForTest(w)
 	p.bindMBIMHealthIndications(w)
 
 	deadline := time.Now().Add(3 * time.Second)

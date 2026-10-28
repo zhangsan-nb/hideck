@@ -9,7 +9,7 @@ import (
 )
 
 func TestIPSec3GPPListenerAppliesTCPMSS(t *testing.T) {
-	base, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	base, err := NewSystemIMSNetwork(nil).ListenTCP(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +39,10 @@ func TestIPSec3GPPListenerAppliesTCPMSS(t *testing.T) {
 		t.Fatal(err)
 	case conn := <-accepted:
 		defer conn.Close()
-		if got := socketTCPMSS(t, conn); got != ipsec3gppTCPMSS {
-			t.Fatalf("accepted TCP MSS = %d, want %d", got, ipsec3gppTCPMSS)
+		// TCP_MAXSEG is a ceiling: Linux subtracts negotiated TCP options
+		// (for example, 12 bytes for timestamps) from the effective MSS.
+		if got := socketTCPMSS(t, conn); got <= 0 || got > ipsec3gppTCPMSS {
+			t.Fatalf("accepted TCP MSS = %d, want 0 < MSS <= %d", got, ipsec3gppTCPMSS)
 		}
 	}
 }

@@ -1,8 +1,12 @@
 mcc: "515"
 mnc: "02"
 id: globe_ph_51502
+custom_epdg: weconnect.globe.com.ph
 device_model: rmx3366
 dpd_interval_seconds: 120
+# The P-CSCF never answers REGISTER over UDP; starting there spends a whole
+# refresh deadline before TCP is tried.
+ims_transport: tcp
 ike_proposals:
   - aes256-sha256-prfsha256-modp2048
   - aes256-sha256-prfsha512-modp2048

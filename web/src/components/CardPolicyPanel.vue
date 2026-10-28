@@ -39,7 +39,7 @@ const mirror = computed<PolicyMirror | null>(() =>
     : null
 )
 
-const { ipVersion, apn, vowifiUpstreamProxyID, pending: fieldPending, error: fieldError, errorCode: fieldErrorCode, errorField, saveIPVersion, saveAPN, saveVowifiUpstreamProxy } =
+const { ipVersion, apn, vowifiUpstreamProxyID, localPhoneOverride, pending: fieldPending, error: fieldError, errorCode: fieldErrorCode, errorField, saveIPVersion, saveAPN, saveVowifiUpstreamProxy, saveLocalPhoneOverride } =
   useCardPolicyFields(toRef(props, 'policy'), async (patch) => {
     if (!props.iccid) return { ok: false, error: { message: 'SIM 身份未就绪' } }
     return cardsService.putPolicy(props.iccid, patch)
@@ -53,6 +53,11 @@ onMounted(() => {
 })
 
 function onAPNEnter(event: KeyboardEvent) {
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
+}
+
+function onLocalPhoneEnter(event: KeyboardEvent) {
   const target = event.target as HTMLInputElement | null
   target?.blur()
 }
@@ -226,6 +231,28 @@ const airplaneHint = computed(() => {
 
         <div class="policy-setting-row">
           <span>
+            <strong>本机号码</strong>
+            <small>用于通知、设备总览、短信和命令；留空使用自动识别</small>
+          </span>
+          <div class="policy-field-control">
+          <el-input
+            v-model="localPhoneOverride"
+            placeholder="例如 +447700900123"
+            maxlength="16"
+            clearable
+            :disabled="!canEditPolicy || fieldPending !== null"
+            @blur="saveLocalPhoneOverride"
+            @keyup.enter="onLocalPhoneEnter"
+          />
+          <small v-if="fieldPending === 'local_phone_override'">正在保存...</small>
+          <div v-if="fieldError && errorField === 'local_phone_override'" role="alert" class="text-xs text-red-600 dark:text-red-400">
+            {{ fieldError }}，请重试
+          </div>
+          </div>
+        </div>
+
+        <div class="policy-setting-row">
+          <span>
             <strong>前置代理</strong>
             <small>指定这张卡走哪条。不指定就按国家，多条时优先选 UDP 正常的；改完会自动重连</small>
           </span>
@@ -343,7 +370,7 @@ const airplaneHint = computed(() => {
 
       <footer class="policy-projection">
         <div><span>策略投影</span><strong>{{ policyProjection }}</strong></div>
-        <small>开关即时应用；IP 与 APN 在字段变更后自动保存</small>
+        <small>开关即时应用；文本字段变更后自动保存</small>
       </footer>
     </div>
   </section>

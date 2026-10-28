@@ -5,11 +5,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -42,13 +40,14 @@ type webhookPayloadMeta struct {
 // 通过 HTTP POST 将通知推送到用户配置的 URL 列表
 // 该渠道为「只出不进」—— 仅推送通知，不支持接收命令
 type WebhookChannel struct {
-	urls         []string                  // 目标 URL 列表
-	secret       string                    // HMAC-SHA256 签名密钥，为空时不签名
-	textTemplate string                    // 文本模板（为空则透传原文）
-	headers      map[string]string         // 用户自定义请求头（不允许覆盖系统头）
-	client       *http.Client              // 带超时的 HTTP 客户端
-	retryMax     int                       // 最大重试次数
-	handlers     map[string]CommandHandler // 空实现占位
+	urls            []string                  // 目标 URL 列表
+	secret          string                    // HMAC-SHA256 签名密钥，为空时不签名
+	textTemplate    string                    // 文本模板（为空则透传原文）
+	payloadTemplate string                    // JSON 请求体模板（为空则使用兼容结构）
+	headers         map[string]string         // 用户自定义请求头（不允许覆盖系统头）
+	client          *http.Client              // 带超时的 HTTP 客户端
+	retryMax        int                       // 最大重试次数
+	handlers        map[string]CommandHandler // 空实现占位
 }
 
 // protectedWebhookHeaders 是系统强制设置、不允许被自定义头覆盖的请求头（小写）
@@ -60,8 +59,6 @@ var protectedWebhookHeaders = map[string]struct{}{
 type SendWithContextResult struct {
 	FailedURLs []string
 }
-
-var webhookPlaceholderPattern = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_]+)\s*\}\}`)
 
 // NewWebhookChannel 根据配置创建 Webhook 渠道
 func NewWebhookChannel(cfg config.WebhookConfig) (*WebhookChannel, error) {
@@ -80,14 +77,18 @@ func NewWebhookChannel(cfg config.WebhookConfig) (*WebhookChannel, error) {
 	if retryMax < 0 {
 		retryMax = 0
 	}
+	if err := ValidateWebhookPayloadTemplate(cfg.PayloadTemplate); err != nil {
+		return nil, err
+	}
 
 	ch := &WebhookChannel{
-		urls:         cfg.URLs,
-		secret:       cfg.Secret,
-		textTemplate: cfg.TextTemplate,
-		headers:      sanitizeWebhookHeaders(cfg.Headers),
-		retryMax:     retryMax,
-		handlers:     make(map[string]CommandHandler),
+		urls:            cfg.URLs,
+		secret:          cfg.Secret,
+		textTemplate:    cfg.TextTemplate,
+		payloadTemplate: cfg.PayloadTemplate,
+		headers:         sanitizeWebhookHeaders(cfg.Headers),
+		retryMax:        retryMax,
+		handlers:        make(map[string]CommandHandler),
 		client: &http.Client{
 			Timeout: time.Duration(timeoutMs) * time.Millisecond,
 		},
@@ -141,27 +142,11 @@ func (w *WebhookChannel) SendWithContextDetailed(ctx NotificationContext) (SendW
 		}
 	}
 
-	ts := ctx.Timestamp.Format(time.RFC3339)
-	payload := webhookPayload{
-		Event:     event,
-		Timestamp: ts,
-		Text:      textForPush,
-		Meta: webhookPayloadMeta{
-			DeviceID:    strings.TrimSpace(ctx.DeviceID),
-			DeviceName:  strings.TrimSpace(ctx.DeviceName),
-			DeviceLabel: ctx.DeviceLabel(),
-			Number:      strings.TrimSpace(ctx.Number),
-			LocalNumber: strings.TrimSpace(ctx.LocalNumber),
-			ContactName: strings.TrimSpace(ctx.ContactName),
-			Attribution: strings.TrimSpace(ctx.Attribution),
-			Event:       event,
-			Timestamp:   ts,
-		},
-	}
-
-	body, err := json.Marshal(payload)
+	ctx.Event = event
+	ctx.Text = textForPush
+	body, err := w.renderPayload(ctx)
 	if err != nil {
-		return result, fmt.Errorf("序列化 webhook payload 失败: %w", err)
+		return result, err
 	}
 
 	// 预计算 HMAC 签名（所有 URL 共用同一份 body，签名只算一次）
@@ -190,38 +175,6 @@ func (w *WebhookChannel) SendWithContextDetailed(ctx NotificationContext) (SendW
 	wg.Wait()
 	result.FailedURLs = failedURLs
 	return result, lastErr
-}
-
-func (w *WebhookChannel) renderText(ctx NotificationContext) (rendered string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("模板渲染异常: %v", r)
-		}
-	}()
-	values := map[string]string{
-		"text":         strings.TrimSpace(ctx.Text),
-		"event":        strings.TrimSpace(ctx.Event),
-		"timestamp":    ctx.Timestamp.Format(time.RFC3339),
-		"number":       strings.TrimSpace(ctx.Number),
-		"local_number": strings.TrimSpace(ctx.LocalNumber),
-		"contact_name": strings.TrimSpace(ctx.ContactName),
-		"attribution":  strings.TrimSpace(ctx.Attribution),
-		"device_id":    strings.TrimSpace(ctx.DeviceID),
-		"device_name":  strings.TrimSpace(ctx.DeviceName),
-		"device_label": ctx.DeviceLabel(),
-	}
-	rendered = webhookPlaceholderPattern.ReplaceAllStringFunc(w.textTemplate, func(token string) string {
-		matches := webhookPlaceholderPattern.FindStringSubmatch(token)
-		if len(matches) != 2 {
-			return token
-		}
-		key := matches[1]
-		if v, ok := values[key]; ok {
-			return v
-		}
-		return token
-	})
-	return rendered, nil
 }
 
 // RegisterCommand 空实现 — Webhook 渠道不支持接收命令

@@ -47,3 +47,27 @@ func TestMixedRecorderReportsEmptyAudio(t *testing.T) {
 		t.Fatal("empty mixed recording did not report an error")
 	}
 }
+
+func TestIncomingRecorderExcludesPromptAudio(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caller.wav")
+	recorder, err := newIncomingRecorder(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := repeatByte(pcmToMuLaw(2000), browserSamplesPerFrame)
+	caller := repeatByte(pcmToMuLaw(-1000), browserSamplesPerFrame)
+	recorder.Add(mixToIMS, prompt)
+	recorder.Add(mixFromIMS, caller)
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := int16(binary.LittleEndian.Uint16(data[mixedWAVHeaderBytes:]))
+	want := muLawToPCM(caller[0])
+	if got != want {
+		t.Fatalf("recorded sample=%d, want caller-only %d", got, want)
+	}
+}

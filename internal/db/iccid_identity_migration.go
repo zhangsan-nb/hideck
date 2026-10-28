@@ -113,13 +113,33 @@ func mergedSIMICCIDRow(rows []SIMCard) (SIMCard, error) {
 		}
 	}
 	winner.IMSI = imsi
-	if winner.Operator == "" {
-		for _, row := range rows {
-			if row.Operator != "" {
-				winner.Operator = row.Operator
-				break
-			}
+	mergeMissingSIMCardMetadata(&winner, rows)
+	return winner, nil
+}
+
+func mergeMissingSIMCardMetadata(winner *SIMCard, rows []SIMCard) {
+	for _, row := range rows {
+		if blankStringPointer(winner.CurrentIMEI) && !blankStringPointer(row.CurrentIMEI) {
+			value := strings.TrimSpace(*row.CurrentIMEI)
+			winner.CurrentIMEI = &value
+		}
+		fillMissingString(&winner.Operator, row.Operator)
+		fillMissingString(&winner.RegStatusText, row.RegStatusText)
+		fillMissingString(&winner.LAC, row.LAC)
+		fillMissingString(&winner.CellID, row.CellID)
+		fillMissingString(&winner.APN, row.APN)
+		if winner.CreatedAt.IsZero() || (!row.CreatedAt.IsZero() && row.CreatedAt.Before(winner.CreatedAt)) {
+			winner.CreatedAt = row.CreatedAt
 		}
 	}
-	return winner, nil
+}
+
+func blankStringPointer(value *string) bool {
+	return value == nil || strings.TrimSpace(*value) == ""
+}
+
+func fillMissingString(target *string, candidate string) {
+	if strings.TrimSpace(*target) == "" && strings.TrimSpace(candidate) != "" {
+		*target = candidate
+	}
 }

@@ -12,8 +12,7 @@ import (
 func TestSubscriptionTimerNStartsAfterQueueAndOnlyClosesUsage(t *testing.T) {
 	for _, preset := range []string{vodafoneUKCarrierPresetID, "2degrees_nz_53024", "CTEUK_23433"} {
 		for _, mwi := range []bool{false, true} {
-			s := newSubscriptionLifecycleTestService(t, nil)
-			s.cfg.CarrierPresetID = preset
+			s := newSubscriptionLifecycleTestServiceForPreset(t, nil, preset)
 			result := beginProtocolSubscription(t, s, mwi)
 			f := s.subscriptionFieldsLocked(mwi)
 			if got := f.lifecycle.notifyDeadline.Sub(f.lifecycle.sentAt); got != 64*s.transport.transactionTimers().t1 {
@@ -134,8 +133,7 @@ func TestSubscriptionExpiryDoesNotShortenRetryAfter(t *testing.T) {
 
 func TestSubscriptionMWIRejectionStillWinsOverTimersAndEOF(t *testing.T) {
 	for _, status := range []int{405, 489} {
-		s := newSubscriptionLifecycleTestService(t, nil)
-		s.cfg.CarrierPresetID = "2degrees_nz_53024"
+		s := newSubscriptionLifecycleTestServiceForPreset(t, nil, "2degrees_nz_53024")
 		result := beginProtocolSubscription(t, s, true)
 		result.response, result.err = sip.NewResponse(status, "unsupported"), errors.New("unsupported MWI")
 		_ = s.recordMWISubscriptionResult(result)

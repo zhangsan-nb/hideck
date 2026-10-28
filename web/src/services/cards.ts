@@ -11,6 +11,7 @@ type PutCardPolicyRequest = {
   phone_mode?: string
   data_strategy?: string
   vowifi_upstream_proxy_id?: string
+  local_phone_override?: string
 }
 
 export const cardsService = {

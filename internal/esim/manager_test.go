@@ -875,6 +875,30 @@ func TestDisableProfileDoesNotPowerCycleInsideManager(t *testing.T) {
 	}
 }
 
+func TestProfileOperationsRejectExpiredOwnershipBeforeOpeningAPDU(t *testing.T) {
+	const aidHex = "A0000005591010FFFFFFFF8900000100"
+	const targetICCID = "8986001234567890123"
+	wantErr := errors.New("worker replaced")
+	var channelCalls atomic.Int32
+	mgr := NewManagerWithChannelFactory("stale-device", func([]byte) (*lpa.Client, error) {
+		channelCalls.Add(1)
+		return nil, errors.New("APDU channel must not open")
+	}, nil, nil, nil)
+	mgr.SetSwitchLeaseAcquirer(func(SwitchOperation, string) (func(), error) {
+		return nil, wantErr
+	})
+
+	if _, err := mgr.SwitchProfileWithResult(context.Background(), targetICCID, aidHex); !errors.Is(err, wantErr) {
+		t.Fatalf("SwitchProfileWithResult() error=%v want ownership error", err)
+	}
+	if err := mgr.DisableProfile(context.Background(), targetICCID, aidHex); !errors.Is(err, wantErr) {
+		t.Fatalf("DisableProfile() error=%v want ownership error", err)
+	}
+	if got := channelCalls.Load(); got != 0 {
+		t.Fatalf("APDU channel calls=%d want 0", got)
+	}
+}
+
 func TestDisableProfileTreatsMBIMInvalidChannelAsExpected(t *testing.T) {
 	const aidHex = "A0000005591010FFFFFFFF8900000100"
 	const targetICCID = "8986001234567890123"

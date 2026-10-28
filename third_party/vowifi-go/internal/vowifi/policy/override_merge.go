@@ -80,7 +80,11 @@ func applyCarrierOverride(preset CarrierPreset, override CarrierOverride) Carrie
 		preset.IKERekeyIntervalSeconds = override.IKERekeyIntervalSeconds
 	}
 	applyBoolPtr(&preset.KeepChildSAOnRekeyDecline, override.KeepChildSAOnRekeyDecline)
-	applyBoolPtr(&preset.WithholdDeviceIdentity, override.WithholdDeviceIdentity)
+	if override.WithholdDeviceIdentity != nil {
+		value := *override.WithholdDeviceIdentity
+		preset.WithholdDeviceIdentity = &value
+	}
+	applyBoolPtr(&preset.DeferPeerChildRekeySwitch, override.DeferPeerChildRekeySwitch)
 	preset.IMSRegisterTemplate = applyIMSRegisterTemplateOverride(preset.IMSRegisterTemplate, override.IMSRegisterTemplate)
 	setStringIfPresent(&preset.SMSRoutingMethod, override.SMSRoutingMethod)
 	setStringIfPresent(&preset.SMSRoutingGW, override.SMSRoutingGW)
@@ -186,6 +190,8 @@ func applyIMSRegisterTemplateOverride(target IMSRegisterTemplate, override IMSRe
 		target.SecurityClientMechanisms = cloneMechanisms(override.SecurityClientMechanisms)
 	}
 	applyBoolPtr(&target.StrictSecurityServerOffer, override.StrictSecurityServerOffer)
+	applyBoolPtr(&target.AcceptRegisterContactWithoutUser, override.AcceptRegisterContactWithoutUser)
+	applyBoolPtr(&target.RPReportOverPortUS, override.RPReportOverPortUS)
 	applyBoolPtr(&target.EnableInitialRejectFallback, override.EnableInitialRejectFallback)
 	applyBoolPtr(&target.FallbackIncludesServerParamsInSecCl, override.FallbackIncludesServerParamsInSecCl)
 	target.RegisterPolicy = applyIMSRegisterPolicyOverride(target.RegisterPolicy, override.RegisterPolicy)

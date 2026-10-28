@@ -178,6 +178,14 @@ func (p *Pool) stopNativeVoLTE(deviceID, reason string) {
 }
 
 func (p *Pool) StopSoftwareIMS(deviceID string) error {
+	return p.stopSoftwareIMS(deviceID, true)
+}
+
+// stopSoftwareIMS with restoreRadio=false leaves the radio as it is. Card policy
+// projection uses it: the teardown would otherwise bring the radio online from the
+// not-yet-projected config, and a multi-IMSI SIM (DITO, Lebara UK) that sees a
+// foreign network in that window switches to its roaming IMSI.
+func (p *Pool) stopSoftwareIMS(deviceID string, restoreRadio bool) error {
 	if p == nil {
 		return nil
 	}
@@ -185,7 +193,7 @@ func (p *Pool) StopSoftwareIMS(deviceID string) error {
 		p.voWiFiHost().InvalidateRuntime(deviceID, "native_phone")
 		return nil
 	}
-	return p.voWiFiHost().Disable(p.Context(), deviceID, "native_volte", true)
+	return p.voWiFiHost().Disable(p.Context(), deviceID, "native_volte", restoreRadio)
 }
 
 func (p *Pool) SetNativeIMS(ctx context.Context, deviceID string, enabled bool) error {
@@ -204,6 +212,14 @@ func (p *Pool) EnsureIMSClients(ctx context.Context, deviceID string) error {
 	return w.QMICore.EnsureIMSClients(ctx)
 }
 
+func (p *Pool) EnsureVoiceIndications(ctx context.Context, deviceID string) error {
+	w := p.GetWorker(deviceID)
+	if w == nil || w.QMICore == nil {
+		return fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
+	}
+	return w.QMICore.EnsureVOICEIndications(ctx)
+}
+
 func (p *Pool) ReleaseIMSClients(deviceID string) error {
 	w := p.GetWorker(deviceID)
 	if w == nil || w.QMICore == nil {
@@ -212,20 +228,20 @@ func (p *Pool) ReleaseIMSClients(deviceID string) error {
 	return w.QMICore.ReleaseIMSClients()
 }
 
-func (p *Pool) OnIMSRegistration(deviceID string, handler func(*qmi.IMSARegistrationStatus)) error {
+func (p *Pool) SubscribeIMSRegistration(deviceID string, handler func(*qmi.IMSARegistrationStatus)) (func(), error) {
 	w := p.GetWorker(deviceID)
 	if w == nil || w.QMICore == nil {
-		return fmt.Errorf("设备 %s 没有 QMI", deviceID)
+		return nil, fmt.Errorf("设备 %s 没有 QMI", deviceID)
 	}
-	return w.QMICore.OnIMSRegistrationStatus(handler)
+	return w.QMICore.SubscribeIMSRegistrationStatus(handler)
 }
 
-func (p *Pool) OnIMSServices(deviceID string, handler func(*qmi.IMSAServicesStatus)) error {
+func (p *Pool) SubscribeIMSServices(deviceID string, handler func(*qmi.IMSAServicesStatus)) (func(), error) {
 	w := p.GetWorker(deviceID)
 	if w == nil || w.QMICore == nil {
-		return fmt.Errorf("设备 %s 没有 QMI", deviceID)
+		return nil, fmt.Errorf("设备 %s 没有 QMI", deviceID)
 	}
-	return w.QMICore.OnIMSServicesStatus(handler)
+	return w.QMICore.SubscribeIMSServicesStatus(handler)
 }
 
 func (p *Pool) IMSAStatus(ctx context.Context, deviceID string) (volte.Registration, error) {
@@ -351,12 +367,12 @@ func (p *Pool) VOICEStopContinuousDTMF(ctx context.Context, deviceID string, cal
 	return err
 }
 
-func (p *Pool) OnVoiceStatus(deviceID string, handler func(*qmi.VoiceAllCallInfo)) error {
+func (p *Pool) SubscribeVoiceStatus(deviceID string, handler func(*qmi.VoiceAllCallInfo)) (func(), error) {
 	w := p.GetWorker(deviceID)
 	if w == nil || w.QMICore == nil {
-		return fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
+		return nil, fmt.Errorf("设备 %s 没有 QMI VOICE", deviceID)
 	}
-	return w.QMICore.OnVoiceCallStatus(handler)
+	return w.QMICore.SubscribeVoiceCallStatus(handler)
 }
 
 func (p *Pool) VOICEGetAllCallInfo(ctx context.Context, deviceID string) (*qmi.VoiceAllCallInfo, error) {

@@ -14,7 +14,7 @@ func (s *Server) deviceBackendSwitcher() deviceBackendSwitcher {
 	return newDeviceBackendSwitchService(s.pool, s.configPath)
 }
 
-func respondBackendSwitchFailure(c *gin.Context, err error) {
+func respondBackendSwitchFailure(c businessContext, err error) {
 	status := http.StatusConflict
 	payload := gin.H{"status": "error", "message": err.Error()}
 	var failure *backendSwitchFailure

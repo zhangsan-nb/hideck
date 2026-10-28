@@ -42,6 +42,8 @@ func TemplateToInternal(t carrier.IMSRegisterTemplate) policy.IMSRegisterTemplat
 		SecurityClientIncludesServerParams:  t.SecurityClientIncludesServerParams,
 		SecurityClientMechanisms:            mechanismsToInternal(t.SecurityClientMechanisms),
 		StrictSecurityServerOffer:           t.StrictSecurityServerOffer,
+		AcceptRegisterContactWithoutUser:    t.AcceptRegisterContactWithoutUser,
+		RPReportOverPortUS:                  t.RPReportOverPortUS,
 		EnableInitialRejectFallback:         t.EnableInitialRejectFallback,
 		FallbackIncludesServerParamsInSecCl: t.FallbackIncludesServerParamsInSecCl,
 		RegisterPolicy:                      registerPolicyToInternal(t.RegisterPolicy),
@@ -66,6 +68,8 @@ func TemplateFromInternal(t policy.IMSRegisterTemplate) carrier.IMSRegisterTempl
 		SecurityClientIncludesServerParams:  t.SecurityClientIncludesServerParams,
 		SecurityClientMechanisms:            mechanismsFromInternal(t.SecurityClientMechanisms),
 		StrictSecurityServerOffer:           t.StrictSecurityServerOffer,
+		AcceptRegisterContactWithoutUser:    t.AcceptRegisterContactWithoutUser,
+		RPReportOverPortUS:                  t.RPReportOverPortUS,
 		EnableInitialRejectFallback:         t.EnableInitialRejectFallback,
 		FallbackIncludesServerParamsInSecCl: t.FallbackIncludesServerParamsInSecCl,
 		RegisterPolicy:                      registerPolicyFromInternal(t.RegisterPolicy),
@@ -106,6 +110,7 @@ func toInternalIKE(result *policy.EffectiveCarrierConfig, cfg carrier.EffectiveC
 	result.IKERekeyIntervalSeconds = cfg.IKERekeyIntervalSeconds
 	result.WithholdDeviceIdentity = cfg.WithholdDeviceIdentity
 	result.KeepChildSAOnRekeyDecline = cfg.KeepChildSAOnRekeyDecline
+	result.DeferPeerChildRekeySwitch = cfg.DeferPeerChildRekeySwitch
 }
 
 func toInternalIMS(result *policy.EffectiveCarrierConfig, cfg carrier.EffectiveCarrierConfig) {
@@ -160,6 +165,7 @@ func fromInternalIKE(result *carrier.EffectiveCarrierConfig, cfg policy.Effectiv
 	result.IKERekeyIntervalSeconds = cfg.IKERekeyIntervalSeconds
 	result.WithholdDeviceIdentity = cfg.WithholdDeviceIdentity
 	result.KeepChildSAOnRekeyDecline = cfg.KeepChildSAOnRekeyDecline
+	result.DeferPeerChildRekeySwitch = cfg.DeferPeerChildRekeySwitch
 }
 
 func fromInternalIMS(result *carrier.EffectiveCarrierConfig, cfg policy.EffectiveCarrierConfig) {

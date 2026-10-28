@@ -1,11 +1,39 @@
 package manager
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/iniwex5/quectel-qmi-go/pkg/qmi"
 )
+
+func TestEnsureVOICEIndicationsUsesConfiguredRegistration(t *testing.T) {
+	m := &Manager{log: NewNopLogger()}
+	called := 0
+	m.registerVOICEIndications = func(_ context.Context, cfg qmi.VoiceIndicationRegistration) error {
+		called++
+		if !cfg.CallNotificationEvents || !cfg.SupplementaryServiceNotificationEvents || !cfg.USSDNotificationEvents {
+			t.Fatalf("unexpected registration: %+v", cfg)
+		}
+		return nil
+	}
+	if err := m.EnsureVOICEIndications(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Fatalf("registration calls=%d", called)
+	}
+}
+
+func TestEnsureVOICEIndicationsRejectsDisabledConfiguration(t *testing.T) {
+	m := &Manager{cfg: Config{DisableVOICEInd: true}, log: NewNopLogger()}
+	err := m.EnsureVOICEIndications(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("want explicit disabled error, got %v", err)
+	}
+}
 
 func waitManagerEvent(t *testing.T, ch <-chan Event) Event {
 	t.Helper()

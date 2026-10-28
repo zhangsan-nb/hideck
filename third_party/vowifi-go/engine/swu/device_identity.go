@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/iniwex5/vowifi-go/engine/ikev2"
+	"github.com/iniwex5/vowifi-go/engine/logger"
+	"go.uber.org/zap"
 )
 
 const (
@@ -78,6 +80,7 @@ func (s *Session) informationalDeviceIdentityReply(payloads []ikev2.Payload) ([]
 		return nil, err
 	}
 	reply, err := s.deviceIdentityReply()
+	logger.Info("ePDG requested DEVICE_IDENTITY in INFORMATIONAL", zap.Bool("imei_available", reply != nil))
 	if err != nil || reply == nil {
 		return nil, err
 	}

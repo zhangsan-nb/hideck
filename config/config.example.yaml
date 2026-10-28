@@ -39,9 +39,27 @@ outbound_limits:
 modem_voice:
   auto_enable_adb: true
 
+# 可在系统设置页面填写并测试。密码留空会保留已有值。
+# 自动清理默认关闭，只会删除超过保留期且当前内容已成功归档的数据。
+archive:
+  enabled: false
+  endpoint: ""
+  username: ""
+  password: ""
+  base_path: hideck
+  interval_hours: 24
+  retention_days: 30
+  auto_cleanup: false
+  include_sms: true
+  include_calls: true
+  include_recordings: true
+
 system:
   # 仅 OpenWrt 使用：把已拨号的数据网卡动态映射到 netifd，其他系统必须保持 false。
   openwrt_dynamic_interfaces: false
+  auto_answer:
+    audio_file: data/phone/auto-answer.wav
+    devices: {}
 
 web:
   username: admin
@@ -121,3 +139,7 @@ wecom:
 # notification_device_filters:
 #   telegram: [modem-1]
 #   bark: [modem-2, modem-3]
+
+# MCP 与现有 HTTP/HTTPS 共用端口，令牌在网页设置中管理。
+mcp:
+  enabled: false

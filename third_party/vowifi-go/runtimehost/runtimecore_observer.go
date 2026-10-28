@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/iniwex5/vowifi-go/internal/vowifi/logging"
 	"github.com/iniwex5/vowifi-go/internal/vowifi/runtimecore"
 )
 
@@ -135,6 +136,14 @@ func (observer *instanceObserver) applyEvent(
 		state.RegStatusText = "registered"
 		clearRuntimeError(state)
 	case "sms_ready":
+		if !state.IMSReady {
+			// The IMS service can still report ready while the runtime that
+			// owns it is being torn down; SMS needs a registered IMS.
+			logging.Info("runtime SMS ready ignored without IMS registration",
+				"device", state.DeviceID, "phase", state.Phase, "ims_state", state.IMSState,
+				"last_reason", state.LastReason)
+			return
+		}
 		state.Phase = "sms_ready"
 		state.SMSReady = true
 		state.SMSRXPending = false

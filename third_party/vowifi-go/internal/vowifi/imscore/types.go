@@ -76,6 +76,9 @@ type IMSNetwork interface {
 // SystemIMSNetwork is the default IMS network implementation.
 type SystemIMSNetwork struct {
 	localIP net.IP
+	// DisableMPTCPMSSFallback keeps the OS-selected listener even when Linux
+	// MPTCP cannot set TCP_MAXSEG. The later MSS setup then reports the error.
+	DisableMPTCPMSSFallback bool
 }
 
 // NewSystemIMSNetwork creates a network with the given local IP.
@@ -141,7 +144,7 @@ func (n *SystemIMSNetwork) DialTCPContext(ctx context.Context, local, remote *ne
 
 // ListenTCP listens for TCP connections.
 func (n *SystemIMSNetwork) ListenTCP(addr *net.TCPAddr) (net.Listener, error) {
-	return net.ListenTCP("tcp", addr)
+	return listenSystemIMSTCP(addr, !n.DisableMPTCPMSSFallback)
 }
 
 // ListenPacket listens for UDP packets.
@@ -166,6 +169,11 @@ type Service struct {
 	// Registration state.
 	regSession *registerSession
 	spiPairs   [][2]uint32
+
+	// Set when this REGISTER flow moved an oversized UDP request to TCP, and
+	// when that TCP failed so the flow retries over UDP without moving again.
+	largeRegisterMovedToTCP atomic.Bool
+	largeRegisterTCPFailed  atomic.Bool
 
 	// SIP transport.
 	transport                 *sipTransport
@@ -194,6 +202,7 @@ type Service struct {
 	portSRecoveryPending      atomic.Bool
 	portSRecoveryAwaitingFlow atomic.Bool
 	portSOnDemandObserved     atomic.Bool
+	portSMissingAfterRegister atomic.Bool
 	portSWatchMu              sync.Mutex
 	portSWatchTimer           *time.Timer
 	portSWatchGeneration      uint64
@@ -284,6 +293,7 @@ type Service struct {
 	onSMSReady             func()
 	onSMSReadiness         func(SMSReadiness)
 	smsReceiverReady       bool
+	smsReadinessReason     atomic.Value
 	smsMemoryFull          bool
 	smsMemoryDenied        bool
 	smsMemoryDeniedGateway string
@@ -467,6 +477,8 @@ type DeliveryPartMatch = smsdelivery.DeliveryPartMatch
 
 // DeliveryStatus is the SMS delivery status.
 type DeliveryStatus = smsdelivery.DeliveryStatus
+type DeliveryRecord = smsdelivery.DeliveryRecord
+type SMSDeliveryIdentityStore = smsdelivery.IdentityStore
 
 // DeliveryPartStatus is one delivery part.
 type DeliveryPartStatus = smsdelivery.DeliveryPartStatus

@@ -165,7 +165,7 @@ func TestParseSIPResponsePreservesStructuredHeaders(t *testing.T) {
 		!strings.Contains(contacts, "second@ims.example") {
 		t.Fatalf("projected Contact header = %q", contacts)
 	}
-	if expires, err := registrationExpires(response, "<sip:second@ims.example>", 600*time.Second); err != nil || expires != 42*time.Second {
+	if expires, err := registrationExpires(response, "<sip:second@ims.example>", 600*time.Second, false); err != nil || expires != 42*time.Second {
 		t.Fatalf("registration expires = %s, %v", expires, err)
 	}
 	if string(response.Body) != "body" {

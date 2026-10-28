@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,7 +156,7 @@ func TestIncomingRekeyCollisionReturnsTemporaryFailure(t *testing.T) {
 	session, transport := newEstablishedControlSession(t)
 	defer stopControlTestSession(session)
 	session.rekeyMu.Lock()
-	err := session.handleIncomingCreateChildSAParsed(77, nil)
+	err := session.handleIncomingCreateChildSAParsed(newIKEHeader(session.spiI, session.spiR, ikev2.CREATE_CHILD_SA, 0, 77), nil)
 	session.rekeyMu.Unlock()
 	if err != nil {
 		t.Fatalf("handleIncomingCreateChildSAParsed: %v", err)
@@ -320,5 +321,43 @@ func TestRetiringChildSACleansKernelOverlap(t *testing.T) {
 	session.retireInboundChildSA(3)
 	if plane.retiredSPI != 3 {
 		t.Fatalf("retired kernel SPI = %d, want 3", plane.retiredSPI)
+	}
+}
+
+// RFC 7296 2.1: a retransmission of a refused request gets the same refusal.
+func TestIncomingRekeyCollisionAnswerIsResent(t *testing.T) {
+	session, transport := newEstablishedControlSession(t)
+	defer stopControlTestSession(session)
+	request := newIKEHeader(session.spiI, session.spiR, ikev2.CREATE_CHILD_SA, 0, 77)
+	session.rekeyMu.Lock()
+	err := session.handleIncomingCreateChildSAParsed(request, nil)
+	session.rekeyMu.Unlock()
+	if err != nil {
+		t.Fatalf("handleIncomingCreateChildSAParsed: %v", err)
+	}
+	receiveFragmentPacket(t, transport.sentIKE)
+	if handled, err := session.answerRetransmittedCreateChildSA(request); !handled || err != nil {
+		t.Fatalf("retransmission handled=%v err=%v, want the refusal resent", handled, err)
+	}
+	payloads := sentPeerResponsePayloads(t, session, transport)
+	notify, ok := payloads[0].(*ikev2.EncryptedPayloadNotify)
+	if len(payloads) != 1 || !ok || notify.NotifyType != ikev2.TEMPORARY_FAILURE {
+		t.Fatalf("resent = %#v, want TEMPORARY_FAILURE", payloads)
+	}
+}
+
+func TestIKERekeyResponseErrorNamesReceivedPayloads(t *testing.T) {
+	session := &Session{}
+	for _, tc := range []struct {
+		payloads []ikev2.Payload
+		want     string
+	}{
+		{nil, "(response: none)"},
+		{[]ikev2.Payload{&ikev2.EncryptedPayloadNotify{NotifyType: ikev2.NO_ADDITIONAL_SAS}}, "(response: N(35))"},
+	} {
+		err := session.completeInitiatedIKESARekey(initiatedIKERekey{payloads: tc.payloads})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("error = %v, want %q", err, tc.want)
+		}
 	}
 }

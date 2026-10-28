@@ -98,7 +98,10 @@ func (f *deadlineRegistrationSession) Registration(ctx context.Context) (Registr
 func TestObservationTimeoutCanReachHealthyCandidate(t *testing.T) {
 	s, f := testService(t)
 	s.gateway = registrationTestGateway{&deadlineRegistrationSession{testSession: f, lastCandidateReady: true}}
-	op, err := s.Start(context.Background(), "d", Request{RequestID: "trial", Kind: "trial", Candidates: []string{"B", "A"}, RegistrationSeconds: 1, StabilitySeconds: 1})
+	// The healthy candidate needs another polling interval if its first stable
+	// sample falls just short under race instrumentation.
+	const registrationWindowSeconds = 2
+	op, err := s.Start(context.Background(), "d", Request{RequestID: "trial", Kind: "trial", Candidates: []string{"B", "A"}, RegistrationSeconds: registrationWindowSeconds, StabilitySeconds: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

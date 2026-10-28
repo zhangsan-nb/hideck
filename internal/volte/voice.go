@@ -14,17 +14,23 @@ import (
 	"github.com/yibaiba/hideck/pkg/logger"
 )
 
+// QMI VOICE_CALL_STATE 取值，顺序按 libqmi/3GPP 规范：
+// IDLE, ORIG, INCOMING, CONV, CC_IN_PROG, ALERTING, HOLD, WAITING,
+// DISCONNECTING, END, SETUP。
+// 注意 0x04 是 CC_IN_PROGRESS——"呼叫已发出、等待呼叫控制完成"的早媒体
+// 阶段（对方还在振铃、我们听到回铃音），**不是**接通。
 const (
 	qmiCallIdle          qmi.VoiceCallState     = 0x00
-	qmiCallIncoming      qmi.VoiceCallState     = 0x01
-	qmiCallOriginating   qmi.VoiceCallState     = 0x02
-	qmiCallAlerting      qmi.VoiceCallState     = 0x03
-	qmiCallConversation  qmi.VoiceCallState     = 0x04
-	qmiCallHolding       qmi.VoiceCallState     = 0x05
-	qmiCallWaiting       qmi.VoiceCallState     = 0x06
-	qmiCallDisconnecting qmi.VoiceCallState     = 0x07
-	qmiCallEnd           qmi.VoiceCallState     = 0x08
-	qmiCallSetup         qmi.VoiceCallState     = 0x09
+	qmiCallOriginating   qmi.VoiceCallState     = 0x01
+	qmiCallIncoming      qmi.VoiceCallState     = 0x02
+	qmiCallConversation  qmi.VoiceCallState     = 0x03
+	qmiCallCCInProgress  qmi.VoiceCallState     = 0x04
+	qmiCallAlerting      qmi.VoiceCallState     = 0x05
+	qmiCallHolding       qmi.VoiceCallState     = 0x06
+	qmiCallWaiting       qmi.VoiceCallState     = 0x07
+	qmiCallDisconnecting qmi.VoiceCallState     = 0x08
+	qmiCallEnd           qmi.VoiceCallState     = 0x09
+	qmiCallSetup         qmi.VoiceCallState     = 0x0a
 	qmiDirMO             qmi.VoiceCallDirection = 0x01
 	qmiDirMT             qmi.VoiceCallDirection = 0x02
 )
@@ -43,6 +49,7 @@ type voiceSession struct {
 	incomingSeen  map[string]bool
 	recentlyEnded map[uint8]qmiTombstone
 	attached      bool
+	unsubscribe   func()
 	incoming      []func(voicehost.IncomingCall)
 	events        []func(voicehost.CallEvent)
 }
@@ -70,32 +77,64 @@ func newVoiceSession() *voiceSession {
 	}
 }
 
-func (c *Controller) attachVoice(deviceID string) {
+func (c *Controller) attachVoice(deviceID string) error {
 	c.mu.Lock()
 	s := c.sess[deviceID]
 	if s == nil {
 		c.mu.Unlock()
-		return
+		return errors.New("volte: native IMS session is not active")
 	}
 	if s.voice == nil {
 		s.voice = newVoiceSession()
 	}
 	vs := s.voice
-	first := !vs.attached
-	vs.attached = true
+	if vs.attached {
+		c.mu.Unlock()
+		c.ReconcileCalls(context.Background(), deviceID)
+		return nil
+	}
 	gen := s.gen
 	c.mu.Unlock()
-	if first {
-		_ = c.host.OnVoiceStatus(deviceID, func(info *qmi.VoiceAllCallInfo) {
-			s.events.Lock()
-			defer s.events.Unlock()
-			if !c.sessionGenerationLive(deviceID, s, gen) {
-				return
-			}
-			c.handleVoiceInfo(deviceID, vs, info)
-		})
+	unsubscribe, err := c.host.SubscribeVoiceStatus(deviceID, func(info *qmi.VoiceAllCallInfo) {
+		s.events.Lock()
+		defer s.events.Unlock()
+		if !c.voiceSubscriptionLive(deviceID, s, vs, gen) {
+			return
+		}
+		c.handleVoiceInfo(deviceID, vs, info)
+	})
+	if err != nil {
+		return fmt.Errorf("subscribe QMI VOICE status: %w", err)
 	}
+	c.mu.Lock()
+	current := c.sess[deviceID]
+	if current != s || current.gen != gen || vs.attached {
+		c.mu.Unlock()
+		unsubscribe()
+		if current != s || current == nil || current.gen != gen {
+			return errors.New("volte: native IMS session changed")
+		}
+		return nil
+	}
+	vs.attached = true
+	vs.unsubscribe = unsubscribe
+	c.mu.Unlock()
 	c.ReconcileCalls(context.Background(), deviceID)
+	return nil
+}
+
+func (c *Controller) voiceSubscriptionLive(deviceID string, owner *session, voice *voiceSession, gen uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.sess[deviceID]
+	return s != nil && s == owner && s.gen == gen && s.voice == voice && voice.attached
+}
+
+func (c *Controller) voiceStatusSubscribed(deviceID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.sess[deviceID]
+	return s != nil && s.voice != nil && s.voice.attached
 }
 
 func (c *Controller) ReconcileCalls(ctx context.Context, deviceID string) {
@@ -206,12 +245,23 @@ func (c *Controller) beginCall(ctx context.Context, request voicehost.BeginCallR
 		return voicehost.CallSnapshot{}, errors.New("volte: controller is not configured")
 	}
 	st := c.Status(deviceID)
-	if !st.Ready() {
+	if !st.IMSRegistered {
 		return voicehost.CallSnapshot{}, errors.New("volte: native IMS is not registered")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := c.ensureVoiceIndications(ctx, deviceID, "pre_dial"); err != nil {
+		return voicehost.CallSnapshot{}, err
+	}
+	if !c.voiceStatusSubscribed(deviceID) {
+		return voicehost.CallSnapshot{}, errors.New("volte: QMI VOICE status subscription is not active")
+	}
+	// 拨号前把语音路由重新指到 USB 声卡：模组重启（USB 重新枚举）会丢掉
+	// AT+QPCMV 的设置，而进程里的会话闸门不会跟着复位，症状是声卡能打开、
+	// 下行有声、上行每帧写 EPIPE（对方完全听不到）。
+	// 必须在 VOICEDial 之前——放到通话建立中间会打断 QMI 语音状态机。
+	c.armVoicePCM(deviceID)
 	qmiID, err := c.host.VOICEDial(ctx, deviceID, request.Callee)
 	if err != nil {
 		return voicehost.CallSnapshot{}, err
@@ -299,6 +349,9 @@ func (c *Controller) AnswerIncomingCall(ctx context.Context, request voicehost.A
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// 模组重启后 QPCMV 路由会丢失；来电与外呼必须在改变
+	// QMI 通话状态前重新连接 USB 语音路由。
+	c.armVoicePCM(request.DeviceID)
 	if err := c.host.VOICEAnswer(ctx, request.DeviceID, call.QMI); err != nil {
 		return voicehost.AnswerResult{}, err
 	}
@@ -336,6 +389,22 @@ func voiceControlLost(err error) bool {
 		strings.Contains(msg, "connection closed")
 }
 
+// emitCallFinalized 在终态事件之后补发 CallFinalized。
+//
+// phone 层把混音 WAV 转成 MP3、把 RecordingName 写回记录的收尾只挂在
+// CallFinalized 上（internal/phone/lifecycle.go）。内置 VoLTE 此前只发
+// CallEnded / CallCanceled，于是 VoLTE 通话的录音永远停在磁盘上：WAV 写出来了，
+// 通话记录里却没有录音。只对真正接通过的通话补发，未接来电没有混音录音，
+// 走一遍收尾只会多出一条 recording_unavailable。
+func (c *Controller) emitCallFinalized(deviceID, callID, peer, direction, codec, reason string, at time.Time) {
+	c.emitEvent(deviceID, voicehost.CallEvent{
+		Type: "CallFinalized", DeviceID: deviceID, CallID: callID,
+		Caller: peer, Callee: peer, Direction: direction,
+		State: "completed", Time: at, Reason: reason, AudioCodec: codec,
+		RecordingError: audioError(c.Status(deviceID)),
+	})
+}
+
 func (c *Controller) finishLocalCall(deviceID string, call nativeCall, reason string) {
 	if strings.TrimSpace(reason) == "" {
 		reason = call.Reason
@@ -362,6 +431,9 @@ func (c *Controller) finishLocalCall(deviceID string, call nativeCall, reason st
 		State: "completed", Time: time.Now(), Reason: reason, AudioCodec: call.Codec,
 		RecordingError: audioError(c.Status(deviceID)),
 	})
+	if call.State == "connected" {
+		c.emitCallFinalized(deviceID, call.ID, call.Peer, call.Direction, call.Codec, reason, time.Now())
+	}
 }
 
 func (c *Controller) HoldCall(ctx context.Context, deviceID, id string) error {
@@ -434,23 +506,24 @@ func (c *Controller) StartCallCapture(deviceID, id, basePath string) error {
 func (c *Controller) DeviceStatus(deviceID string) map[string]interface{} {
 	st := c.Status(deviceID)
 	return map[string]interface{}{
-		"device_id":           deviceID,
-		"ready":               st.Ready(),
-		"registered":          st.IMSRegistered,
-		"phase":               st.Phase,
-		"backend":             "native_volte",
-		"ims_enabled":         st.IMSEnabled,
-		"volte_enabled":       st.VoLTEEnabled,
-		"voice_available":     st.VoiceAvailable,
-		"uac_enabled":         st.UACEnabled,
-		"reboot_required":     st.RebootRequired,
-		"provision_stage":     st.ProvisionStage,
-		"qmi_ims_unavailable": st.QMIIMSUnavailable,
-		"plmn":                st.PLMN,
-		"mbn_name":            st.MBNName,
-		"lte_registered":      st.LTERegistered,
-		"ims_pdn_active":      st.IMSPDNActive,
-		"last_error":          st.LastError,
+		"device_id":               deviceID,
+		"ready":                   st.Ready(),
+		"registered":              st.IMSRegistered,
+		"phase":                   st.Phase,
+		"backend":                 "native_volte",
+		"ims_enabled":             st.IMSEnabled,
+		"volte_enabled":           st.VoLTEEnabled,
+		"voice_indications_ready": st.VoiceIndicationsReady,
+		"voice_available":         st.VoiceAvailable,
+		"uac_enabled":             st.UACEnabled,
+		"reboot_required":         st.RebootRequired,
+		"provision_stage":         st.ProvisionStage,
+		"qmi_ims_unavailable":     st.QMIIMSUnavailable,
+		"plmn":                    st.PLMN,
+		"mbn_name":                st.MBNName,
+		"lte_registered":          st.LTERegistered,
+		"ims_pdn_active":          st.IMSPDNActive,
+		"last_error":              st.LastError,
 	}
 }
 
@@ -499,6 +572,14 @@ func (c *Controller) handleVoiceInfo(deviceID string, vs *voiceSession, info *qm
 		}
 		if !existed && vs.ignoreReusedQMISlot(item.ID, peer, dir, now) {
 			continue
+		}
+		if !existed || prev.State != state {
+			// QMI 状态是这条链路上唯一能回答"对方到底接了没有"的证据。
+			// 此前整条路径不打任何状态日志，通话停在哪一步只能靠猜（是没接、
+			// 状态没上报、还是映射错位）。只在变化时打，一通电话通常 3~5 条。
+			logger.Info("VoLTE 通话状态", "device", deviceID, "qmi_id", item.ID,
+				"raw", uint8(item.State), "state", state, "event", eventType,
+				"direction", dir, "peer", peer)
 		}
 		id := prev.ID
 		if !existed {
@@ -555,6 +636,9 @@ func (c *Controller) handleVoiceInfo(deviceID string, vs *voiceSession, info *qm
 			}
 		}
 		if eventType == "CallEnded" || eventType == "CallCanceled" {
+			if prev.State == "connected" {
+				c.emitCallFinalized(deviceID, id, peer, dir, codec, reason, now)
+			}
 			c.releaseCallAudio(id)
 			vs.forget(id)
 		}
@@ -567,6 +651,9 @@ func (c *Controller) handleVoiceInfo(deviceID string, vs *voiceSession, info *qm
 		if unansweredInbound(call.Direction, call.State) {
 			eventType = "CallCanceled"
 		}
+		// 状态马上会被改成 completed，这里先记下这通电话是否接通过，
+		// 只有接通过才需要补发 CallFinalized。
+		wasConnected := call.State == "connected"
 		call.State = "completed"
 		vs.put(call)
 		if vs.markEmitted(call.ID, rankKey("completed")) {
@@ -575,6 +662,9 @@ func (c *Controller) handleVoiceInfo(deviceID string, vs *voiceSession, info *qm
 				Direction: call.Direction, State: "completed", Time: now, Reason: call.Reason, AudioCodec: call.Codec,
 				RecordingError: audioError(c.Status(deviceID)),
 			})
+			if wasConnected {
+				c.emitCallFinalized(deviceID, call.ID, call.Peer, call.Direction, call.Codec, call.Reason, now)
+			}
 			c.releaseCallAudio(call.ID)
 			vs.forget(call.ID)
 		}
@@ -587,7 +677,9 @@ func mapQMIState(state qmi.VoiceCallState) (string, string) {
 	switch state {
 	case qmiCallOriginating:
 		return "calling", "CallRinging"
-	case qmiCallIncoming, qmiCallAlerting, qmiCallSetup:
+	// CC_IN_PROGRESS 是早媒体：对方仍在振铃，我们听到的是回铃音。
+	// 把它当"接通"会让录音从回铃阶段就开始，铃声被录进通话记录里。
+	case qmiCallIncoming, qmiCallAlerting, qmiCallSetup, qmiCallCCInProgress:
 		return "ringing", "CallRinging"
 	case qmiCallConversation, qmiCallHolding:
 		return "connected", "CallAnswered"
@@ -696,7 +788,10 @@ func audioError(st Status) string {
 	return "VoLTE 音频不可用：未检测到 UAC 声卡"
 }
 
-const alsaOpenBudget = 800 * time.Millisecond
+// alsaOpenBudget 覆盖"端点激活（最坏 2×1.2s）+ 打开正式流"。这个预算一旦
+// 超时，callPCM 会把 alsaUnavailable 永久置位，后续所有通话都无音频，
+// 所以必须留足余量。
+const alsaOpenBudget = 3 * time.Second
 
 func openALSAPCMBounded(device string, budget time.Duration) (PCMPort, error) {
 	if budget <= 0 {

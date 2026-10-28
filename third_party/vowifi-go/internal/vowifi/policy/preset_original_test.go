@@ -10,7 +10,7 @@ import (
 
 func TestOriginalCarrierPresetAssetsRemainExact(t *testing.T) {
 	wantHashes := map[string]string{
-		"2degrees_nz_53024.yaml":   "40ba4fc4b21aed123cb5d2c3634a3a4a0d7d7a33046dd2e356e8950e6250c471",
+		"2degrees_nz_53024.yaml":   "361779ed5f41ae506d96d7595b66c9524717bc7a12e1d8dda2ba1875ca778808",
 		"ais_th_52001.yaml":        "f02b536317933c00c1960bfcceaf1b3f2ec8e22e1106917854231953832ccaa0",
 		"ais_th_52003.yaml":        "7b7c444a9c641d19c9ea184997c27c24eacc52d6b31db729b448fe9e1f50d0fd",
 		"att_310280.yaml":          "7337399037af7fbe67874b83f8f0c95ff0a1c588ec49ee41a404cf33e04fd054",
@@ -26,7 +26,7 @@ func TestOriginalCarrierPresetAssetsRemainExact(t *testing.T) {
 		"ee_uk_23432.yaml":         "0ccae7020f4151d0e31f3440a1a09bb87f39ee16362a0c556e1ac02824f8a559",
 		"elisa_ee_24802.yaml":      "e7d833e821deda5145033d70536b4820ac1d4685ef4a272996df7e66fc355243",
 		"giffgaff_23410.yaml":      "06f01db9a8c6f0d57569174aa596b9a67e2fa568d06449b50c10b2a41611d3ef",
-		"globe_ph_51502.yaml":      "12f8308437a4ad127111060288bde09b153961460f0561355f32b5a44fa76bac",
+		"globe_ph_51502.yaml":      "66985e55c849dd758090d3413c5295fa7da4029b8b0af38afb3d06debe34f190",
 		"hotlink_my_50212.yaml":    "e3aae045a505983376a7b9627a5e43e13af136a747f545087c7b97d0a8a67c8c",
 		"kddi_44051.yaml":          "b6ea22aecd795b8265b7dddd59e8a83831f11201515b8dc9439b1892d5f0fd45",
 		"kpn_nl_20408.yaml":        "86d9fb6ba92179511f4aa7c13b1a10f2658ca4485df82b337b87dc2348c94eb9",
@@ -35,12 +35,12 @@ func TestOriginalCarrierPresetAssetsRemainExact(t *testing.T) {
 		"mtn_ng_62130.yaml":        "64d0de150cdd6f393ed78faecf92b0d2b70ca1625eb0526b0dc8077e436cc6cc",
 		"o2_de_26203.yaml":         "4772a3f0babe9f5da7cc160315f3344b63e0221b1d94fb8d18ee8739eec0d5a6",
 		"o2_de_26207_alias.yaml":   "a9a182ff9bc59e262d0c348dc8a65ff9c86cdd8ded3fe04803f1c1b7ea214cf2",
-		"one_nz_53001.yaml":        "3a8bf0b20d12a121d226621472b855166208426bb75ff58b4b9fef67480340f5",
+		"one_nz_53001.yaml":        "758732596bb61bdd8cdec8658e97e4842eed9d4d879e775a4c236bdc8840ae3e",
 		"oneglobal_23425.yaml":     "46a5450e9403217115f7a82d9174a18feb544b9828641b83f93c761114abb5d5",
 		"orange_fr_20801.yaml":     "68d6d1cc830316d17cd607d65cf176e0f92b27393bd899735136a0fabc507328",
 		"smart_ph_51503.yaml":      "fca9263e07be5707fa1365879179462757e554261512dbcc58cfd0fac390086e",
 		"softbank_44020.yaml":      "6398fe7ccbae656d6a85589ba1cf903b4d07e4c22978d7fff92aad11ccfb1dd7",
-		"spark_nz_53005.yaml":      "866b6142a772bb8f31a98143732bc3bcb618e985b7b9f868b9ef2d0401e5c85e",
+		"spark_nz_53005.yaml":      "dbe82d043ed10c283ad2c16ca96db2f9538514d07e1a21213d285a5eec3cdf9b",
 		"sunrise_22802.yaml":       "2160911e6d4fca664fbc9c474eee71a468d282703760f3c87e99df9043872e7b",
 		"telekom_de_26201.yaml":    "aac0d40b575b4ab5625ac437b3ea7cd228633f87b1e2b5f3ddd12f7024bd4455",
 		"three_hk_454003.yaml":     "a3a84a436646cddd80df30aa2493f4b4076f08664a478d0b954c4142ef196d61",
@@ -49,7 +49,7 @@ func TestOriginalCarrierPresetAssetsRemainExact(t *testing.T) {
 		"tmobile_310260.yaml":      "57619113de3cfbe9ddb4afda13885501415f534f580fc55a8e7f54a15f2b93a6",
 		"vodafone_de_26202.yaml":   "3ad3ae5e4371c7436521e357e782acdef7dc8b6fee1e5574834d7be706347ab6",
 		"vodafone_nl_20404.yaml":   "ca847e87abe516603cd92f05ef0a9e5ba8ad0869f7cca3ea2aabe9f49694df8b",
-		"vodafone_uk_23415.yaml":   "d40342f17a7f665d0c07e127c7cd057d70f4b48ce22da8ef03eb9c07e114fc22",
+		"vodafone_uk_23415.yaml":   "4a83ec1b4d83d853d627b008cdc40ecfc40fd521dd183e303c74b5e79df12808",
 		"ymobile_44000.yaml":       "6804965637e8d5d279b9a2eeb6a2dcd5ecd01bd8b4745ee7a5486b17d1c30c72",
 	}
 	entries, err := carrierPresetFiles.ReadDir("presets")

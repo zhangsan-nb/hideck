@@ -53,6 +53,14 @@ type lebaraUKIdentityRecoverState struct {
 	InFlight  bool
 	Manual    bool
 	UpdatedAt time.Time
+	owner     workerLifecycleOwner
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
+
+type lebaraUKIdentityRecoverUpdate struct {
+	status  string
+	message string
 }
 
 type lebaraUKParkingProfile struct {
@@ -135,7 +143,8 @@ func (p *Pool) launchLebaraUKIdentityRecover(w *Worker, iccid string, manual, fr
 	if !manual && !class.LiveFlipped && p.pinnedLebaraUKRecoverICCID(w.ID) == "" {
 		return nil
 	}
-	if !p.beginLebaraUKIdentityRecover(w, target, manual) {
+	run := p.beginLebaraUKIdentityRecoverRun(w, target, manual)
+	if run == nil {
 		snap := p.LebaraUKIdentityRecoverSnapshot(w.ID)
 		if snap.InFlight {
 			return nil
@@ -148,7 +157,7 @@ func (p *Pool) launchLebaraUKIdentityRecover(w *Worker, iccid string, manual, fr
 		}
 		return nil
 	}
-	go p.runLebaraUKIdentityRecover(w, manual)
+	go p.runLebaraUKIdentityRecoverState(w, manual, run)
 	return nil
 }
 
@@ -177,8 +186,16 @@ func (p *Pool) pinnedLebaraUKRecoverICCID(deviceID string) string {
 }
 
 func (p *Pool) beginLebaraUKIdentityRecover(w *Worker, iccid string, manual bool) bool {
+	return p.beginLebaraUKIdentityRecoverRun(w, iccid, manual) != nil
+}
+
+func (p *Pool) beginLebaraUKIdentityRecoverRun(
+	w *Worker,
+	iccid string,
+	manual bool,
+) *lebaraUKIdentityRecoverState {
 	if p == nil || w == nil {
-		return false
+		return nil
 	}
 	deviceID := strings.TrimSpace(w.ID)
 	pinned := normalizeSIMIdentity(iccid)
@@ -193,7 +210,7 @@ func (p *Pool) beginLebaraUKIdentityRecover(w *Worker, iccid string, manual bool
 	}
 	if deviceID == "" || pinned == "" {
 		p.lebaraRecoverMu.Unlock()
-		return false
+		return nil
 	}
 	if p.lebaraRecover == nil {
 		p.lebaraRecover = make(map[string]*lebaraUKIdentityRecoverState)
@@ -201,7 +218,7 @@ func (p *Pool) beginLebaraUKIdentityRecover(w *Worker, iccid string, manual bool
 	state := p.lebaraRecover[deviceID]
 	if state != nil && state.InFlight {
 		p.lebaraRecoverMu.Unlock()
-		return false
+		return nil
 	}
 	if state != nil && !manual && normalizeSIMIdentityForCompare(state.ICCID) == normalizeSIMIdentityForCompare(pinned) &&
 		state.Attempts >= lebaraUKIdentityRecoverMaxRounds {
@@ -209,26 +226,40 @@ func (p *Pool) beginLebaraUKIdentityRecover(w *Worker, iccid string, manual bool
 		state.Message = ErrLebaraUKIdentityRecoverStopped.Error()
 		state.UpdatedAt = time.Now()
 		p.lebaraRecoverMu.Unlock()
-		return false
+		return nil
 	}
-	if state == nil || normalizeSIMIdentityForCompare(state.ICCID) != normalizeSIMIdentityForCompare(pinned) {
-		state = &lebaraUKIdentityRecoverState{ICCID: pinned}
-		p.lebaraRecover[deviceID] = state
+	attempts := 0
+	if state != nil && normalizeSIMIdentityForCompare(state.ICCID) == normalizeSIMIdentityForCompare(pinned) && !manual {
+		attempts = state.Attempts
 	}
-	if manual {
-		state.Attempts = 0
+	if state != nil && state.cancel != nil {
+		state.cancel()
 	}
-	state.ICCID = pinned
+	state = &lebaraUKIdentityRecoverState{ICCID: pinned, Attempts: attempts}
+	state.ctx, state.cancel = context.WithCancel(p.recoverContext())
+	state.owner = workerLifecycleOwner{worker: w, generation: w.generation}
 	state.InFlight = true
 	state.Manual = manual
 	state.Status = LebaraUKIdentityRecovering
 	state.Message = "正在恢复英国身份"
 	state.UpdatedAt = time.Now()
+	p.lebaraRecover[deviceID] = state
 	p.lebaraRecoverMu.Unlock()
-	return true
+	return state
 }
 
 func (p *Pool) runLebaraUKIdentityRecover(w *Worker, manual bool) {
+	if p == nil || w == nil {
+		return
+	}
+	run := p.currentLebaraUKIdentityRecover(w.ID)
+	if run == nil || run.owner.worker != w || run.owner.generation != w.generation {
+		return
+	}
+	p.runLebaraUKIdentityRecoverState(w, manual, run)
+}
+
+func (p *Pool) runLebaraUKIdentityRecoverState(w *Worker, manual bool, run *lebaraUKIdentityRecoverState) {
 	if p == nil || w == nil {
 		return
 	}
@@ -239,23 +270,33 @@ func (p *Pool) runLebaraUKIdentityRecover(w *Worker, manual bool) {
 				"event", "LEBARA_UK_IDENTITY_RECOVER_PANIC",
 				"device", deviceID,
 				"panic", rec)
-			p.finishLebaraUKIdentityRecoverFailed(deviceID, fmt.Errorf("eSIM 操作异常"))
+			p.finishLebaraUKIdentityRecoverFailedForRun(deviceID, run, fmt.Errorf("eSIM 操作异常"))
 		}
 		p.lebaraRecoverMu.Lock()
-		if state := p.lebaraRecover[deviceID]; state != nil {
+		if state := p.lebaraRecover[deviceID]; state != nil && state == run {
 			state.InFlight = false
 			state.UpdatedAt = time.Now()
 		}
 		p.lebaraRecoverMu.Unlock()
 		p.broadcastVoWiFiStateChange(deviceID)
 	}()
+	if !p.lebaraUKIdentityRecoverRunCurrent(run) {
+		return
+	}
 
 	class, _ := ClassifyWorkerLebaraUK(w)
-	p.stopLebaraUKFlippedVoWiFi(w, class)
-	p.enforceLebaraUKRadioOff(w, "lebara_uk_identity_recover")
+	if !p.runLebaraUKIdentityOwnerEffect(run, true, func() {
+		p.stopLebaraUKFlippedVoWiFi(w, class)
+		p.enforceLebaraUKRadioOff(w, "lebara_uk_identity_recover")
+	}) {
+		return
+	}
 	p.broadcastVoWiFiStateChange(deviceID)
 	if err := p.waitLebaraUKSwitchIdle(deviceID); err != nil {
-		p.finishLebaraUKIdentityRecoverFailed(deviceID, err)
+		p.finishLebaraUKIdentityRecoverFailedForRun(deviceID, run, err)
+		return
+	}
+	if !p.lebaraUKIdentityRecoverRunCurrent(run) {
 		return
 	}
 
@@ -265,10 +306,13 @@ func (p *Pool) runLebaraUKIdentityRecover(w *Worker, manual bool) {
 	}
 	var lastErr error
 	for round := 1; round <= rounds; round++ {
-		p.addLebaraUKIdentityRecoverAttempt(deviceID)
-		lastErr = p.recoverLebaraUKIdentityOnce(w)
+		p.addLebaraUKIdentityRecoverAttemptForRun(deviceID, run)
+		lastErr = p.recoverLebaraUKIdentityOnceForRun(w, run)
 		if lastErr == nil {
-			p.finishLebaraUKIdentityRecoverSuccess(w)
+			p.finishLebaraUKIdentityRecoverSuccessForRun(w, run)
+			return
+		}
+		if !p.lebaraUKIdentityRecoverRunCurrent(run) {
 			return
 		}
 		logger.Warn("Lebara 英国身份清污一轮未成功",
@@ -277,17 +321,36 @@ func (p *Pool) runLebaraUKIdentityRecover(w *Worker, manual bool) {
 			"round", round,
 			"iccid", maskICCIDForLog(p.pinnedLebaraUKRecoverICCID(deviceID)),
 			"err", lastErr)
-		p.setLebaraUKIdentityRecoverMessage(deviceID, lastErr.Error())
+		p.setLebaraUKIdentityRecoverStatusForRun(deviceID, run, lebaraUKIdentityRecoverUpdate{
+			status:  LebaraUKIdentityRecovering,
+			message: lastErr.Error(),
+		})
 	}
-	p.finishLebaraUKIdentityRecoverFailed(deviceID, lastErr)
+	p.finishLebaraUKIdentityRecoverFailedForRun(deviceID, run, lastErr)
 }
 
 func (p *Pool) recoverLebaraUKIdentityOnce(w *Worker) error {
+	if w == nil {
+		return fmt.Errorf("设备没有 eSIM 管理器")
+	}
+	return p.recoverLebaraUKIdentityOnceForRun(w, p.currentLebaraUKIdentityRecover(w.ID))
+}
+
+func (p *Pool) recoverLebaraUKIdentityOnceForRun(w *Worker, run *lebaraUKIdentityRecoverState) error {
 	if w == nil || w.EsimMgr == nil {
 		return fmt.Errorf("设备没有 eSIM 管理器")
 	}
 	ctx := p.recoverContext()
+	if run != nil && run.ctx != nil {
+		ctx = run.ctx
+	}
+	if run != nil && !p.lebaraUKIdentityRecoverRunCurrent(run) {
+		return context.Canceled
+	}
 	targetICCID := normalizeSIMIdentity(p.pinnedLebaraUKRecoverICCID(w.ID))
+	if run != nil {
+		targetICCID = normalizeSIMIdentity(run.ICCID)
+	}
 	if targetICCID == "" {
 		targetICCID = normalizeSIMIdentity(w.CurrentICCID())
 	}
@@ -306,12 +369,18 @@ func (p *Pool) recoverLebaraUKIdentityOnce(w *Worker) error {
 			disablingNotAllowed, pprKnown = w.EsimMgr.LookupProfilePPR(targetICCID)
 		}
 	}
+	if run != nil && !p.lebaraUKIdentityRecoverRunCurrent(run) {
+		return context.Canceled
+	}
 	plan, err := planLebaraUKIdentityRecover(groups, targetICCID, disablingNotAllowed, pprKnown)
 	if err != nil {
 		return err
 	}
 
-	p.setLebaraUKIdentityRecoverStatus(w.ID, LebaraUKIdentityRecovering, "正在重置 eSIM Profile")
+	p.setLebaraUKIdentityRecoverStatusForRun(w.ID, run, lebaraUKIdentityRecoverUpdate{
+		status:  LebaraUKIdentityRecovering,
+		message: "正在重置 eSIM Profile",
+	})
 	switch plan.Mode {
 	case "self_cycle":
 		if err := p.lebaraUKDisableProfile(ctx, w, plan.TargetICCID, plan.TargetAIDHex); err != nil {
@@ -350,7 +419,13 @@ func (p *Pool) recoverLebaraUKIdentityOnce(w *Worker) error {
 	if err := p.waitLebaraUKSwitchIdle(w.ID); err != nil {
 		return err
 	}
-	p.setLebaraUKIdentityRecoverStatus(w.ID, LebaraUKIdentityWaiting, "等待英国 IMSI 稳定")
+	if run != nil && !p.lebaraUKIdentityRecoverRunCurrent(run) {
+		return context.Canceled
+	}
+	p.setLebaraUKIdentityRecoverStatusForRun(w.ID, run, lebaraUKIdentityRecoverUpdate{
+		status:  LebaraUKIdentityWaiting,
+		message: "等待英国 IMSI 稳定",
+	})
 	if err := p.waitLebaraUKHomeIdentity(ctx, w, plan.TargetICCID); err != nil {
 		return err
 	}
@@ -389,12 +464,21 @@ func (p *Pool) lebaraUKSwitchThroughParking(ctx context.Context, w *Worker, plan
 	return nil
 }
 
-func (p *Pool) finishLebaraUKIdentityRecoverSuccess(w *Worker) {
+func (p *Pool) finishLebaraUKIdentityRecoverSuccessForRun(w *Worker, run *lebaraUKIdentityRecoverState) {
 	if p == nil || w == nil {
 		return
 	}
-	p.clearLebaraUKIdentityRecover(w.ID)
-	p.enforceLebaraUKRadioOff(w, "lebara_uk_identity_recovered")
+	if run != nil && !p.lebaraUKIdentityRecoverRunCurrent(run) {
+		return
+	}
+	if !p.clearLebaraUKIdentityRecoverRun(w.ID, run) {
+		return
+	}
+	if !p.runLebaraUKIdentityOwnerEffect(run, false, func() {
+		p.enforceLebaraUKRadioOff(w, "lebara_uk_identity_recovered")
+	}) {
+		return
+	}
 	p.broadcastVoWiFiStateChange(w.ID)
 	if !w.Config.VoWiFiEnabled || UsesModemPhoneControl(w.Config.PhoneMode) {
 		return
@@ -403,29 +487,45 @@ func (p *Pool) finishLebaraUKIdentityRecoverSuccess(w *Worker) {
 		logger.Warn("Lebara 身份恢复后等待切卡结束超时，暂不启动 VoWiFi", "device", w.ID, "err", err)
 		return
 	}
+	if run != nil && !p.workerLifecycleOwnerCurrent(run.owner) {
+		return
+	}
 	class, err := ClassifyWorkerLebaraUK(w)
 	if err != nil || class.BlocksVoWiFi() {
 		return
 	}
-	p.clearDesiredVoWiFiRecoverState(w.ID)
-	if err := p.voWiFiHost().Enable(p.recoverContext(), w.ID); err != nil {
+	if !p.runLebaraUKIdentityOwnerEffect(run, false, func() {
+		p.clearDesiredVoWiFiRecoverState(w.ID)
+	}) {
+		return
+	}
+	start := p.captureVoWiFiReadyStart(w)
+	if err := p.enableVoWiFiWhenReady(start, 5*time.Second, "lebara_uk_identity_recovered"); err != nil {
 		logger.Warn("Lebara 身份恢复后启动 VoWiFi 失败", "device", w.ID, "err", err)
 	}
 }
 
-func (p *Pool) finishLebaraUKIdentityRecoverFailed(deviceID string, err error) {
+func (p *Pool) finishLebaraUKIdentityRecoverFailedForRun(deviceID string, run *lebaraUKIdentityRecoverState, err error) {
 	message := "恢复英国身份失败"
 	if err != nil {
 		message = err.Error()
 	}
 	p.lebaraRecoverMu.Lock()
-	if state := p.lebaraRecover[deviceID]; state != nil {
+	updated := false
+	if state := p.lebaraRecover[deviceID]; state != nil && (run == nil || state == run) {
+		if state.cancel != nil {
+			state.cancel()
+		}
 		state.InFlight = false
 		state.Status = LebaraUKIdentityFailed
 		state.Message = message
 		state.UpdatedAt = time.Now()
+		updated = true
 	}
 	p.lebaraRecoverMu.Unlock()
+	if !updated {
+		return
+	}
 	logger.Warn("Lebara 英国身份清污失败，保留 Profile 且不开 VoWiFi",
 		"event", "LEBARA_UK_IDENTITY_RECOVER_FAILED",
 		"device", deviceID,
@@ -741,37 +841,94 @@ func (p *Pool) sleepLebaraUKSettle(ctx context.Context) {
 }
 
 func (p *Pool) clearLebaraUKIdentityRecover(deviceID string) {
+	p.clearLebaraUKIdentityRecoverRun(deviceID, nil)
+}
+
+func (p *Pool) clearLebaraUKIdentityRecoverRun(deviceID string, run *lebaraUKIdentityRecoverState) bool {
 	if p == nil {
-		return
+		return false
 	}
 	deviceID = strings.TrimSpace(deviceID)
 	p.lebaraRecoverMu.Lock()
+	state := p.lebaraRecover[deviceID]
+	if state == nil || (run != nil && state != run) {
+		p.lebaraRecoverMu.Unlock()
+		return false
+	}
+	if state.cancel != nil {
+		state.cancel()
+	}
 	delete(p.lebaraRecover, deviceID)
 	p.lebaraRecoverMu.Unlock()
+	return true
 }
 
-func (p *Pool) addLebaraUKIdentityRecoverAttempt(deviceID string) {
+func (p *Pool) currentLebaraUKIdentityRecover(deviceID string) *lebaraUKIdentityRecoverState {
+	if p == nil {
+		return nil
+	}
 	p.lebaraRecoverMu.Lock()
-	if state := p.lebaraRecover[deviceID]; state != nil {
+	defer p.lebaraRecoverMu.Unlock()
+	return p.lebaraRecover[strings.TrimSpace(deviceID)]
+}
+
+func (p *Pool) lebaraUKIdentityRecoverRunCurrent(run *lebaraUKIdentityRecoverState) bool {
+	if p == nil || run == nil || run.owner.worker == nil || (run.ctx != nil && run.ctx.Err() != nil) {
+		return false
+	}
+	p.lebaraRecoverMu.Lock()
+	current := p.lebaraRecover[run.owner.worker.ID] == run
+	p.lebaraRecoverMu.Unlock()
+	return current && p.workerLifecycleOwnerCurrent(run.owner)
+}
+
+func (p *Pool) runLebaraUKIdentityOwnerEffect(
+	run *lebaraUKIdentityRecoverState,
+	requireActiveRun bool,
+	effect func(),
+) bool {
+	if p == nil || run == nil || run.owner.worker == nil || effect == nil {
+		return false
+	}
+	transition := p.policyTransitionFor(run.owner.worker.ID)
+	transition.Lock()
+	defer transition.Unlock()
+	if !p.workerLifecycleOwnerCurrent(run.owner) {
+		return false
+	}
+	if requireActiveRun && !p.lebaraUKIdentityRecoverRunCurrent(run) {
+		return false
+	}
+	effect()
+	return true
+}
+
+func (p *Pool) cancelLebaraUKIdentityRecover(deviceID string) {
+	p.clearLebaraUKIdentityRecover(deviceID)
+}
+
+func (p *Pool) addLebaraUKIdentityRecoverAttemptForRun(deviceID string, run *lebaraUKIdentityRecoverState) {
+	p.lebaraRecoverMu.Lock()
+	if state := p.lebaraRecover[deviceID]; state != nil && (run == nil || state == run) {
 		state.Attempts++
 		state.UpdatedAt = time.Now()
 	}
 	p.lebaraRecoverMu.Unlock()
 }
 
-func (p *Pool) setLebaraUKIdentityRecoverStatus(deviceID, status, message string) {
+func (p *Pool) setLebaraUKIdentityRecoverStatusForRun(
+	deviceID string,
+	run *lebaraUKIdentityRecoverState,
+	update lebaraUKIdentityRecoverUpdate,
+) {
 	p.lebaraRecoverMu.Lock()
-	if state := p.lebaraRecover[deviceID]; state != nil {
-		state.Status = status
-		state.Message = message
+	if state := p.lebaraRecover[deviceID]; state != nil && (run == nil || state == run) {
+		state.Status = update.status
+		state.Message = update.message
 		state.UpdatedAt = time.Now()
 	}
 	p.lebaraRecoverMu.Unlock()
 	p.broadcastVoWiFiStateChange(deviceID)
-}
-
-func (p *Pool) setLebaraUKIdentityRecoverMessage(deviceID, message string) {
-	p.setLebaraUKIdentityRecoverStatus(deviceID, LebaraUKIdentityRecovering, message)
 }
 
 func maskICCIDForLog(iccid string) string {

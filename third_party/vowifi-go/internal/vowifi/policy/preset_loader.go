@@ -70,6 +70,7 @@ func mustBuildCarrierPresetRegistry() map[string]CarrierPreset {
 func cloneCarrierPreset(value CarrierPreset) CarrierPreset {
 	value.EPDGPort = cloneIntPointer(value.EPDGPort)
 	value.DeviceIdentityEnabled = cloneBoolPointer(value.DeviceIdentityEnabled)
+	value.WithholdDeviceIdentity = cloneBoolPointer(value.WithholdDeviceIdentity)
 	value.NATKeepaliveSeconds = cloneIntPointer(value.NATKeepaliveSeconds)
 	value.DPDIntervalSeconds = cloneIntPointer(value.DPDIntervalSeconds)
 	value.EnableLegacyCiphers = cloneBoolPointer(value.EnableLegacyCiphers)

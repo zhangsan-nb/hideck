@@ -11,13 +11,14 @@ import (
 )
 
 type testWebhookRequest struct {
-	Enabled      bool              `json:"enabled"`
-	URLs         []string          `json:"urls"`
-	Secret       string            `json:"secret"`
-	TimeoutMs    int               `json:"timeout_ms"`
-	RetryMax     int               `json:"retry_max"`
-	TextTemplate string            `json:"text_template"`
-	Headers      map[string]string `json:"headers,omitempty"`
+	Enabled         bool              `json:"enabled"`
+	URLs            []string          `json:"urls"`
+	Secret          string            `json:"secret"`
+	TimeoutMs       int               `json:"timeout_ms"`
+	RetryMax        int               `json:"retry_max"`
+	TextTemplate    string            `json:"text_template"`
+	PayloadTemplate string            `json:"payload_template"`
+	Headers         map[string]string `json:"headers,omitempty"`
 }
 
 type testWebhookResponse struct {
@@ -59,15 +60,20 @@ func (s *Server) handleTestWebhookNotification(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "retry_max 必须在 0-10 之间"})
 		return
 	}
+	if err := notify.ValidateWebhookPayloadTemplate(req.PayloadTemplate); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
 
 	ch, err := notify.NewWebhookChannel(config.WebhookConfig{
-		Enabled:      true,
-		URLs:         urls,
-		Secret:       strings.TrimSpace(req.Secret),
-		TimeoutMs:    req.TimeoutMs,
-		RetryMax:     req.RetryMax,
-		TextTemplate: req.TextTemplate,
-		Headers:      req.Headers,
+		Enabled:         true,
+		URLs:            urls,
+		Secret:          strings.TrimSpace(req.Secret),
+		TimeoutMs:       req.TimeoutMs,
+		RetryMax:        req.RetryMax,
+		TextTemplate:    req.TextTemplate,
+		PayloadTemplate: req.PayloadTemplate,
+		Headers:         req.Headers,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "初始化 Webhook 测试发送器失败: " + err.Error()})

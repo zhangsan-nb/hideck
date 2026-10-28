@@ -109,6 +109,16 @@
 - `ipsec_generation`、`previous_ipsec` 和 `last_unknown_inbound` 记录当前/上一套安全关联的标识及最后一个未知 ESP 包的来源、目标、SPI、序号和时间；跨 runtime 可通过 `IMS security association identifiers` 日志关联。未知 SPI 的头部只是未验证观测，不代表短信到达。诊断不保存密钥或短信正文，安装失败保留原有安全关联，成功安装原子替换。
 - 回归入口：`protected_udp_test.go`、`registrar_downlink_tunnel_test.go`、`udp_security_test.go`、`ipsec_lifecycle_test.go`。本次没有真卡部署验收，不能据此认定本次 VOXI 故障一定由 UDP 或旧 SPI 引起。
 
+## 系统 IMS 监听器的 MPTCP / MSS 兼容
+
+Linux 的 `SystemIMSNetwork` 先沿用 Go 的 MPTCP 选择（包括 `GODEBUG=multipathtcp`），再对实际 MPTCP 监听 socket 设置 IMS 所需的 `TCP_MAXSEG=1100`。成功则保留原监听器；只有该操作返回 `EOPNOTSUPP` 时，才关闭尚未用于注册的监听器，以普通 TCP 重新监听，并记录 `IMS MPTCP listener cannot set TCP_MAXSEG; retrying with TCP` 警告。不按内核版本推断支持情况，也不修改系统 MPTCP 开关。
+
+能力检查中的其他错误、关闭失败、普通 TCP 重建失败，以及后续 MSS 设置失败都会返回给调用方。普通 TCP、非 Linux 平台和用户态网络适配器保持各自原有路径。此检查只证明监听器支持 MSS，不代表已验证运营商的 MPTCP 多路径互通。
+
+需要禁用这项自动重试、保留原始错误进行诊断时，创建网络适配器后、使用前设置 `network.DisableMPTCPMSSFallback = true`；这是 `SystemIMSNetwork` 的代码级选项，不是 YAML 配置项。回归入口：`network_tcp_linux_test.go`（兼容/不兼容 MPTCP、非兼容性错误、系统实际 socket 选择、禁用重试）和 `tcp_mss_unix_test.go`。
+
+`network_tcp_connection_linux_test.go` 另外检查 IPv4/IPv6 的实际 MPTCP 协商、接受连接上的 MSS 和双向数据传输。2026-10-28 在 Linux 5.18 的 179 主机上验证了不支持 MSS 时使用 TCP；在官方 Ubuntu Linux 7.0.0-42 内核的隔离 QEMU 虚拟机中验证了保留 MPTCP，双方 `MultipathTCP()` 均为 true。测试使用真实内核 socket，但没有验证多条子流、跨网切换或运营商互通。179 的 IMS 全包 699 项通过；新内核虚拟机的 MPTCP/原六项专项通过，全包仍有短时限测试超时，不能标为全包通过。
+
 ## 验证边界
 
 下行资源生命周期回归：`port_s_listener_test.go`、`downlink_transport_failure_test.go`、`registrar_downlink_round_state_test.go`、`ipsec_lifecycle_test.go`。当前监听器异常会显式触发恢复，退役监听器与旧 IPsec 清理回调不得破坏新路径；监听器清理与 REGISTER 并发完成、持有注册锁时关闭接收器均有回归覆盖。取消失效连接的被动观察等待不清除真实节点退避，也不能取消重叠重鉴权中新尝试拥有的等待。握手诊断回归：`transport_diagnostics_test.go`、`diagnostics_test.go`、`network_diagnostics_test.go`，覆盖 IPv4/IPv6、双安全流、解密/重放拒绝、写出失败及适配层透传。诊断不改变 SIP/IPsec 报文，不以生成 SYN-ACK 或 REGISTER 200 代替短信接收验收；这些修复不等于已定位运营商侧没有下行的根因。

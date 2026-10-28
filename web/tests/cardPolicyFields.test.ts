@@ -85,3 +85,38 @@ test('a saved proxy policy keeps its value and exposes a restart failure', async
   assert.equal(fields.error.value, '卡策略已保存，但 WiFi calling 重连失败')
   assert.equal(changed, 1)
 })
+
+test('manual local number is trimmed and an empty value clears the override', async () => {
+  const source = ref<CardPolicy | null>(policy())
+  const patches: Array<Record<string, unknown>> = []
+  const fields = useCardPolicyFields(source, async (patch) => {
+    patches.push(patch)
+    return { ok: true }
+  })
+  await nextTick()
+
+  fields.localPhoneOverride.value = '  +447911123456  '
+  await fields.saveLocalPhoneOverride()
+  fields.localPhoneOverride.value = '  '
+  await fields.saveLocalPhoneOverride()
+
+  assert.deepEqual(patches, [
+    { local_phone_override: '+447911123456' },
+    { local_phone_override: '' }
+  ])
+})
+
+test('failed manual local number save restores the persisted value', async () => {
+  const source = ref<CardPolicy | null>({ ...policy(), local_phone_override: '+447700900123' })
+  const fields = useCardPolicyFields(source, async () => ({
+    ok: false,
+    error: { message: '本机号码只能包含数字和开头的 +' }
+  }))
+  await nextTick()
+
+  fields.localPhoneOverride.value = '+44 7700'
+  await fields.saveLocalPhoneOverride()
+
+  assert.equal(fields.localPhoneOverride.value, '+447700900123')
+  assert.equal(fields.errorField.value, 'local_phone_override')
+})

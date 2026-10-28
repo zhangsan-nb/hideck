@@ -7,15 +7,31 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-viper/mapstructure/v2"
 	yaml "go.yaml.in/yaml/v3"
 )
 
 var configFileMu sync.Mutex
 
+type DeviceListValidator func([]DeviceConfig) error
+
+type DeviceUpdateRequest struct {
+	DeviceID string
+	Device   DeviceConfig
+	Validate DeviceListValidator
+}
+
 func AddDeviceInFile(path string, device DeviceConfig) error {
+	return AddDeviceInFileValidated(path, device, nil)
+}
+
+func AddDeviceInFileValidated(path string, device DeviceConfig, validate DeviceListValidator) error {
 	return updateDevicesInFile(path, func(devices *yaml.Node) (*yaml.Node, error) {
 		if findDeviceNodeByID(devices, device.ID) != nil {
 			return nil, fmt.Errorf("设备已存在: %s", device.ID)
+		}
+		if err := validateDeviceListNode(devices, validate); err != nil {
+			return nil, err
 		}
 		devices.Content = append(devices.Content, deviceConfigToNode(device))
 		return devices, nil
@@ -23,52 +39,75 @@ func AddDeviceInFile(path string, device DeviceConfig) error {
 }
 
 func UpdateDeviceInFile(path string, deviceID string, newDevice DeviceConfig) error {
+	return UpdateDeviceInFileValidated(path, DeviceUpdateRequest{DeviceID: deviceID, Device: newDevice})
+}
+
+func UpdateDeviceInFileValidated(path string, request DeviceUpdateRequest) error {
 	return updateDevicesInFile(path, func(devices *yaml.Node) (*yaml.Node, error) {
-		n := findDeviceNodeByID(devices, deviceID)
+		n := findDeviceNodeByID(devices, request.DeviceID)
 		if n == nil {
-			return nil, fmt.Errorf("设备未找到: %s", deviceID)
+			return nil, fmt.Errorf("设备未找到: %s", request.DeviceID)
 		}
-
-		setMapScalar(n, "id", newDevice.ID)
-		setMapScalar(n, "name", newDevice.Name)
-		if newDevice.ModemIMEI != "" {
-			setMapScalar(n, "modem_imei", newDevice.ModemIMEI)
-		} else {
-			deleteMapKey(n, "modem_imei")
+		if err := validateDeviceListNode(devices, request.Validate); err != nil {
+			return nil, err
 		}
-		setMapScalar(n, "device_backend", newDevice.DeviceBackend)
-		setOptionalMapScalar(n, "pcsc_reader_name", newDevice.PCSCReaderName)
-		setOptionalMapScalar(n, "pcsc_usb_path", newDevice.PCSCUSBPath)
-		setOptionalMapScalar(n, "sim_pin_env", newDevice.SIMPINEnv)
-		if newDevice.USBNetMode != nil {
-			setMapInt(n, "usbnet_mode", *newDevice.USBNetMode)
-		} else {
-			deleteMapKey(n, "usbnet_mode")
-		}
-		if newDevice.QMIUseProxy {
-			setMapBool(n, "qmi_use_proxy", true)
-		} else {
-			deleteMapKey(n, "qmi_use_proxy")
-		}
-		if newDevice.QMIProxyPath != "" {
-			setMapScalar(n, "qmi_proxy_path", newDevice.QMIProxyPath)
-		} else {
-			deleteMapKey(n, "qmi_proxy_path")
-		}
-		if newDevice.QMIProxyExecutable != "" {
-			setMapScalar(n, "qmi_proxy_executable", newDevice.QMIProxyExecutable)
-		} else {
-			deleteMapKey(n, "qmi_proxy_executable")
-		}
-
-		if newDevice.ProxyPort > 0 {
-			setMapInt(n, "proxy_port", newDevice.ProxyPort)
-		} else {
-			deleteMapKey(n, "proxy_port")
-		}
-
+		applyDeviceConfigUpdate(n, request.Device)
 		return devices, nil
 	})
+}
+
+func applyDeviceConfigUpdate(node *yaml.Node, device DeviceConfig) {
+	setMapScalar(node, "id", device.ID)
+	setMapScalar(node, "name", device.Name)
+	if device.ModemIMEI != "" {
+		setMapScalar(node, "modem_imei", device.ModemIMEI)
+	} else {
+		deleteMapKey(node, "modem_imei")
+	}
+	setMapScalar(node, "device_backend", device.DeviceBackend)
+	setOptionalMapScalar(node, "pcsc_reader_name", device.PCSCReaderName)
+	setOptionalMapScalar(node, "pcsc_usb_path", device.PCSCUSBPath)
+	setOptionalMapScalar(node, "sim_pin_env", device.SIMPINEnv)
+	if device.USBNetMode != nil {
+		setMapInt(node, "usbnet_mode", *device.USBNetMode)
+	} else {
+		deleteMapKey(node, "usbnet_mode")
+	}
+	if device.QMIUseProxy {
+		setMapBool(node, "qmi_use_proxy", true)
+	} else {
+		deleteMapKey(node, "qmi_use_proxy")
+	}
+	if device.QMIProxyPath != "" {
+		setMapScalar(node, "qmi_proxy_path", device.QMIProxyPath)
+	} else {
+		deleteMapKey(node, "qmi_proxy_path")
+	}
+	if device.QMIProxyExecutable != "" {
+		setMapScalar(node, "qmi_proxy_executable", device.QMIProxyExecutable)
+	} else {
+		deleteMapKey(node, "qmi_proxy_executable")
+	}
+	if device.ProxyPort > 0 {
+		setMapInt(node, "proxy_port", device.ProxyPort)
+	} else {
+		deleteMapKey(node, "proxy_port")
+	}
+}
+
+func validateDeviceListNode(devices *yaml.Node, validate DeviceListValidator) error {
+	if validate == nil {
+		return nil
+	}
+	var raw []map[string]any
+	if err := devices.Decode(&raw); err != nil {
+		return fmt.Errorf("解析设备配置失败: %w", err)
+	}
+	var current []DeviceConfig
+	if err := mapstructure.Decode(raw, &current); err != nil {
+		return fmt.Errorf("转换设备配置失败: %w", err)
+	}
+	return validate(current)
 }
 
 func setOptionalMapScalar(node *yaml.Node, key, value string) {
@@ -101,19 +140,59 @@ func DeleteDeviceInFile(path string, deviceID string) error {
 	if deviceID == "" {
 		return fmt.Errorf("设备未找到: %s", deviceID)
 	}
-	return updateDevicesInFile(path, func(devices *yaml.Node) (*yaml.Node, error) {
-		for i, item := range devices.Content {
-			if item == nil || item.Kind != yaml.MappingNode {
+	return updateConfigInFile(path, func(root *yaml.Node) error {
+		devices := getMapValue(root, "devices")
+		if devices != nil && devices.Kind == yaml.SequenceNode {
+			removeDeviceNode(devices, deviceID)
+		}
+		removeDeviceFromNotificationFilters(root, deviceID)
+		removeDeviceFromAutoAnswer(root, deviceID)
+		return nil
+	})
+}
+
+func removeDeviceFromAutoAnswer(root *yaml.Node, deviceID string) {
+	systemNode := getMapValue(root, "system")
+	autoAnswerNode := getMapValue(systemNode, "auto_answer")
+	devicesNode := getMapValue(autoAnswerNode, "devices")
+	deleteMapKey(devicesNode, deviceID)
+}
+
+func removeDeviceNode(devices *yaml.Node, deviceID string) {
+	for index, item := range devices.Content {
+		if item != nil && item.Kind == yaml.MappingNode && strings.TrimSpace(getMapScalar(item, "id")) == deviceID {
+			devices.Content = append(devices.Content[:index], devices.Content[index+1:]...)
+			return
+		}
+	}
+}
+
+func removeDeviceFromNotificationFilters(root *yaml.Node, deviceID string) {
+	filters := getMapValue(root, "notification_device_filters")
+	if filters == nil || filters.Kind != yaml.MappingNode {
+		return
+	}
+	for index := len(filters.Content) - 2; index >= 0; index -= 2 {
+		devices := filters.Content[index+1]
+		if devices == nil || devices.Kind != yaml.SequenceNode {
+			continue
+		}
+		kept := make([]*yaml.Node, 0, len(devices.Content))
+		removed := false
+		for _, entry := range devices.Content {
+			if entry != nil && strings.TrimSpace(entry.Value) == deviceID {
+				removed = true
 				continue
 			}
-			if strings.TrimSpace(getMapScalar(item, "id")) == deviceID {
-				devices.Content = append(devices.Content[:i], devices.Content[i+1:]...)
-				return devices, nil
-			}
+			kept = append(kept, entry)
 		}
-		// 配置里已经没有这条，视为删除成功，避免 UI 删了却加不回去。
-		return devices, nil
-	})
+		if !removed || len(kept) == 0 {
+			// A missing filter means "all devices". Keep the final, now inactive
+			// device ID so deleting a device cannot broaden notification access.
+			continue
+		}
+		devices.Content = kept
+	}
 }
 
 func updateDevicesInFile(path string, mutate func(*yaml.Node) (*yaml.Node, error)) error {

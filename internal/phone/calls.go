@@ -95,6 +95,7 @@ func (s *Service) Answer(ctx context.Context, request ControlRequest) (CallView,
 	if err != nil {
 		return CallView{}, err
 	}
+	defer s.releaseIncomingClaim(call)
 	defer s.releaseMediaReservation(reservation)
 	s.mu.RLock()
 	incomingSDP, deviceID, callID := call.incomingSDP, call.view.DeviceID, call.view.CallID
@@ -129,6 +130,7 @@ func (s *Service) Reject(request ControlRequest) error {
 	if err != nil {
 		return err
 	}
+	defer s.releaseIncomingClaim(call)
 	defer s.releaseMediaReservation(reservation)
 	s.mu.Lock()
 	if current := s.calls[request.CallID]; current != call || call.terminal {
@@ -334,20 +336,36 @@ func (s *Service) claimIncoming(request ControlRequest) (*activeCall, *MediaSess
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	s.mu.RLock()
+	s.mu.Lock()
 	call := s.calls[request.CallID]
-	if call == nil || call.terminal || call.view.Direction != "inbound" {
-		s.mu.RUnlock()
+	if call == nil || call.terminal || call.view.Direction != "inbound" || call.controlPending {
+		s.mu.Unlock()
 		s.releaseMediaReservation(reservation)
 		return nil, nil, nil, errors.New("phone: pending incoming call not found")
 	}
 	if call.lease != "" && (!secureEqual(call.lease, request.Lease) || call.owner != request.Owner) {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		s.releaseMediaReservation(reservation)
 		return nil, nil, nil, errors.New("phone: call is controlled by another browser")
 	}
-	s.mu.RUnlock()
+	call.controlPending = true
+	if call.autoAnswerTimer != nil {
+		call.autoAnswerTimer.Stop()
+		call.autoAnswerTimer = nil
+	}
+	s.mu.Unlock()
 	return call, media, reservation, nil
+}
+
+func (s *Service) releaseIncomingClaim(call *activeCall) {
+	if call == nil {
+		return
+	}
+	s.mu.Lock()
+	if current := s.calls[call.view.CallID]; current == call {
+		call.controlPending = false
+	}
+	s.mu.Unlock()
 }
 
 func (s *Service) controlledCall(owner, callID, lease string) (*activeCall, error) {

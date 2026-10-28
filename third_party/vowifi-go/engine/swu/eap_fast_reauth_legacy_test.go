@@ -82,6 +82,22 @@ func TestLegacyFastReauthenticationResponseIsSigned(t *testing.T) {
 	}
 }
 
+func TestLegacyFastReauthenticationOpensDeviceIdentityGate(t *testing.T) {
+	key := bytes.Repeat([]byte{0x31}, 16)
+	session := NewSession(&Config{
+		IMSI: "001010123456789", FastReauthID: "reauth@example", DeviceIdentityIMEI: "490154203237518",
+		FastReauthMK: []byte{1}, FastReauthKEncr: []byte{2}, FastReauthKAut: key,
+	})
+	session.deviceIdentityRequested = true
+	request := signedLegacyReauthenticationRequest(t, eapaka.TypeAKA, key)
+	if _, err := session.handleLegacyFastReauthentication(eapaka.Packet{Identifier: 7, Type: eapaka.TypeAKA}, request); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := session.pendingDeviceIdentityReply(); err != nil || reply == nil {
+		t.Fatalf("pending DEVICE_IDENTITY reply = %v, %v", reply, err)
+	}
+}
+
 func signedLegacyReauthenticationRequest(t *testing.T, eapType uint8, key []byte) []byte {
 	t.Helper()
 	counter := (&engineeap.Attribute{Type: engineeap.AT_COUNTER, Value: []byte{0, 4}}).Encode()

@@ -68,10 +68,14 @@ func (s *Server) registerAutomaticTaskRoutes(api *gin.RouterGroup) {
 }
 
 func (s *Server) handleListAutomaticTasks(c *gin.Context) {
+	s.useListAutomaticTasks(c)
+}
+
+func (s *Server) useListAutomaticTasks(c businessContext) {
 	if !s.requireAutomaticTasks(c) {
 		return
 	}
-	tasks, err := s.automaticTasks.ListTasks(c.Request.Context())
+	tasks, err := s.automaticTasks.ListTasks(businessRequestContext(c))
 	if err != nil {
 		writeAutomaticTaskError(c, err)
 		return
@@ -80,11 +84,15 @@ func (s *Server) handleListAutomaticTasks(c *gin.Context) {
 }
 
 func (s *Server) handleGetAutomaticTask(c *gin.Context) {
+	s.useGetAutomaticTask(c)
+}
+
+func (s *Server) useGetAutomaticTask(c businessContext) {
 	id, ok := automaticTaskID(c)
 	if !ok || !s.requireAutomaticTasks(c) {
 		return
 	}
-	task, err := s.automaticTasks.GetTask(c.Request.Context(), id)
+	task, err := s.automaticTasks.GetTask(businessRequestContext(c), id)
 	if err != nil {
 		writeAutomaticTaskError(c, err)
 		return
@@ -93,6 +101,16 @@ func (s *Server) handleGetAutomaticTask(c *gin.Context) {
 }
 
 func (s *Server) handleCreateAutomaticTask(c *gin.Context) {
+	s.useCreateAutomaticTask(c)
+}
+
+func (s *Server) useCreateAutomaticTask(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireAutomaticTasks(c) {
 		return
 	}
@@ -106,7 +124,7 @@ func (s *Server) handleCreateAutomaticTask(c *gin.Context) {
 		writeAutomaticTaskError(c, err)
 		return
 	}
-	created, err := s.automaticTasks.SaveTask(c.Request.Context(), task)
+	created, err := s.automaticTasks.SaveTask(businessRequestContext(c), task)
 	if err != nil {
 		writeAutomaticTaskError(c, err)
 		return
@@ -115,6 +133,16 @@ func (s *Server) handleCreateAutomaticTask(c *gin.Context) {
 }
 
 func (s *Server) handleUpdateAutomaticTask(c *gin.Context) {
+	s.useUpdateAutomaticTask(c)
+}
+
+func (s *Server) useUpdateAutomaticTask(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id, ok := automaticTaskID(c)
 	if !ok || !s.requireAutomaticTasks(c) {
 		return
@@ -129,7 +157,7 @@ func (s *Server) handleUpdateAutomaticTask(c *gin.Context) {
 		writeAutomaticTaskError(c, err)
 		return
 	}
-	updated, err := s.automaticTasks.SaveTask(c.Request.Context(), task)
+	updated, err := s.automaticTasks.SaveTask(businessRequestContext(c), task)
 	if err != nil {
 		writeAutomaticTaskError(c, err)
 		return
@@ -138,11 +166,21 @@ func (s *Server) handleUpdateAutomaticTask(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteAutomaticTask(c *gin.Context) {
+	s.useDeleteAutomaticTask(c)
+}
+
+func (s *Server) useDeleteAutomaticTask(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id, ok := automaticTaskID(c)
 	if !ok || !s.requireAutomaticTasks(c) {
 		return
 	}
-	if err := s.automaticTasks.DeleteTask(c.Request.Context(), id); err != nil {
+	if err := s.automaticTasks.DeleteTask(businessRequestContext(c), id); err != nil {
 		writeAutomaticTaskError(c, err)
 		return
 	}
@@ -150,11 +188,21 @@ func (s *Server) handleDeleteAutomaticTask(c *gin.Context) {
 }
 
 func (s *Server) handleRunAutomaticTask(c *gin.Context) {
+	s.useRunAutomaticTask(c)
+}
+
+func (s *Server) useRunAutomaticTask(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id, ok := automaticTaskID(c)
 	if !ok || !s.requireAutomaticTasks(c) {
 		return
 	}
-	run, err := s.automaticTasks.RunNow(c.Request.Context(), id)
+	run, err := s.automaticTasks.RunNow(businessRequestContext(c), id)
 	if err != nil {
 		writeAutomaticTaskError(c, err)
 		return
@@ -163,6 +211,10 @@ func (s *Server) handleRunAutomaticTask(c *gin.Context) {
 }
 
 func (s *Server) handleListAutomaticTaskRuns(c *gin.Context) {
+	s.useListAutomaticTaskRuns(c)
+}
+
+func (s *Server) useListAutomaticTaskRuns(c businessContext) {
 	if !s.requireAutomaticTasks(c) {
 		return
 	}
@@ -174,7 +226,7 @@ func (s *Server) handleListAutomaticTaskRuns(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, offset = normalizeAutomaticTaskPagination(limit, offset)
-	runs, total, err := s.automaticTasks.ListRuns(c.Request.Context(), taskID, limit, offset)
+	runs, total, err := s.automaticTasks.ListRuns(businessRequestContext(c), taskID, limit, offset)
 	if err != nil {
 		writeAutomaticTaskError(c, err)
 		return
@@ -207,7 +259,7 @@ func validateAutomaticTaskDevice(task automation.Task) error {
 	return nil
 }
 
-func (s *Server) requireAutomaticTasks(c *gin.Context) bool {
+func (s *Server) requireAutomaticTasks(c businessContext) bool {
 	if s != nil && s.automaticTasks != nil {
 		return true
 	}
@@ -215,7 +267,7 @@ func (s *Server) requireAutomaticTasks(c *gin.Context) bool {
 	return false
 }
 
-func automaticTaskID(c *gin.Context) (uint64, bool) {
+func automaticTaskID(c businessContext) (uint64, bool) {
 	id, err := strconv.ParseUint(strings.TrimSpace(c.Param("task_id")), 10, 64)
 	if err != nil || id == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "invalid task_id"})
@@ -235,7 +287,7 @@ func parseOptionalUint64(value string) (uint64, error) {
 	return id, nil
 }
 
-func writeAutomaticTaskError(c *gin.Context, err error) {
+func writeAutomaticTaskError(c businessContext, err error) {
 	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, automation.ErrInvalidTask):

@@ -233,7 +233,7 @@ func TestPrepareVoWiFiStartBlocksLebaraUKCellularMode(t *testing.T) {
 	w.state.Identity.IMSI = "234870000000001"
 	p.workers[w.ID] = w
 
-	_, err := p.prepareVoWiFiStartContext(w.ID, "trace-cellular", "")
+	_, err := p.prepareVoWiFiStartContext(context.Background(), w.ID, "trace-cellular", "")
 	if !errors.Is(err, ErrLebaraUKRFLocked) {
 		t.Fatalf("prepareVoWiFiStartContext() error = %v", err)
 	}

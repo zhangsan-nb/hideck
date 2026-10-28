@@ -17,6 +17,6 @@ func (s *Service) publishLocalNumberLearned(number, source string) {
 	}
 	s.bus.Publish(events.EventLocalNumberLearned{
 		DevID: s.cfg.DeviceID, IMSI: strings.TrimSpace(s.cfg.IMSI), Number: number,
-		Source: strings.TrimSpace(source), Time: time.Now(),
+		Source: strings.TrimSpace(source), Time: time.Now(), ICCID: strings.TrimSpace(s.cfg.ICCID),
 	})
 }

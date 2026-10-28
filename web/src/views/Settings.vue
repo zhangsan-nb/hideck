@@ -13,6 +13,9 @@ import TelegramNotificationTab from '../components/settings/TelegramNotification
 import WeComBotNotificationTab from '../components/settings/WeComBotNotificationTab.vue'
 import WeixinNotificationTab from '../components/settings/WeixinNotificationTab.vue'
 import FeishuNotificationTab from '../components/settings/FeishuNotificationTab.vue'
+import AutoAnswerSettings from '../components/settings/AutoAnswerSettings.vue'
+import McpSettings from '../components/settings/McpSettings.vue'
+import WebDAVArchiveSettings from '../components/settings/WebDAVArchiveSettings.vue'
 import { 
   Key24Regular, 
   Save24Regular,
@@ -630,8 +633,15 @@ onMounted(() => {
                 @change="updateOpenWRTDynamicInterfaces"
               />
             </div>
+            <div class="border-t border-[var(--ui-border)] pt-4">
+              <AutoAnswerSettings />
+            </div>
          </div>
       </section>
+
+      <McpSettings />
+
+      <WebDAVArchiveSettings />
 
       <section class="notify-card p-4 sm:p-6 lg:p-8">
          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
@@ -935,6 +945,24 @@ onMounted(() => {
                     />
                     <div class="text-[10px] text-[var(--ui-muted)] mt-1">
                       支持占位符：<code v-pre>{{text}}</code>、<code v-pre>{{event}}</code>、<code v-pre>{{timestamp}}</code>、<code v-pre>{{device_id}}</code>、<code v-pre>{{device_name}}</code>、<code v-pre>{{device_label}}</code>、<code v-pre>{{local_number}}</code>（收到短信的本机号码，无号码时为 ICCID 尾号）。留空则直接发送原始 text。
+                    </div>
+                  </div>
+
+                  <div class="space-y-1">
+                    <label class="text-xs font-bold text-[var(--ui-muted)] uppercase tracking-wider">JSON 请求体模板</label>
+                    <el-input
+                      v-model="webhookSettings.payload_template"
+                      :disabled="!webhookSettings.enabled"
+                      type="textarea"
+                      :rows="7"
+                      resize="vertical"
+                      placeholder="留空使用 HiDeck 默认 JSON 请求体"
+                      class="font-mono"
+                    />
+                    <div class="text-xs leading-relaxed text-[var(--ui-muted)] mt-1">
+                      用于 Server酱等要求特定字段的服务。变量必须直接作为 JSON 值使用，例如
+                      <code v-pre>{"title":{{title}},"desp":{{message}}}</code>。
+                      支持 <code v-pre>{{title}}</code>、<code v-pre>{{message}}</code>、<code v-pre>{{event}}</code>、<code v-pre>{{timestamp}}</code>、<code v-pre>{{content}}</code>、<code v-pre>{{number}}</code>、<code v-pre>{{local_number}}</code>、<code v-pre>{{device_id}}</code> 和 <code v-pre>{{device_label}}</code>。
                     </div>
                   </div>
                   

@@ -21,6 +21,7 @@ type fakeVoiceGateway struct {
 	beginStarted    chan struct{}
 	beginRelease    chan struct{}
 	answerSDP       string
+	answerCalls     chan voicehost.AnswerRequest
 	rejectEmits     bool
 	hangupCalls     chan string
 	dtmfCalls       chan string
@@ -38,6 +39,7 @@ func newFakeVoiceGateway() *fakeVoiceGateway {
 		beginSnapshot: voicehost.CallSnapshot{CallID: "outbound-1", DeviceID: "dev-1"},
 		hangupCalls:   make(chan string, 8), dtmfCalls: make(chan string, 8),
 		holdCalls:       make(chan string, 8),
+		answerCalls:     make(chan voicehost.AnswerRequest, 8),
 		rejectCalls:     make(chan voicehost.RejectRequest, 8),
 		activeSnapshots: make(map[string]voicehost.CallSnapshot),
 	}
@@ -93,6 +95,7 @@ func (g *fakeVoiceGateway) ActiveCall(deviceID string) *voicehost.CallSnapshot {
 }
 
 func (g *fakeVoiceGateway) AnswerIncomingCall(_ context.Context, request voicehost.AnswerRequest) (voicehost.AnswerResult, error) {
+	g.answerCalls <- request
 	return voicehost.AnswerResult{CallID: request.CallID, State: "Connected", OfferSDP: g.answerSDP}, nil
 }
 
@@ -200,6 +203,38 @@ func (s *memoryCallStore) List(_ context.Context, _ int) ([]CallRecord, error) {
 		result = append(result, record)
 	}
 	return result, nil
+}
+
+func (s *memoryCallStore) Delete(_ context.Context, ids []uint64) ([]CallRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	deleted := make([]CallRecord, 0, len(ids))
+	for _, record := range s.records {
+		if _, ok := wanted[record.ID]; !ok {
+			continue
+		}
+		if activeHistoryStatus(record.Status) {
+			return nil, ErrActiveCallHistoryDelete
+		}
+		deleted = append(deleted, record)
+	}
+	for _, record := range deleted {
+		delete(s.records, record.CallID)
+	}
+	return deleted, nil
+}
+
+func activeHistoryStatus(status string) bool {
+	switch status {
+	case StatusCalling, StatusRinging, StatusWaiting, StatusConnected:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *memoryCallStore) AbandonIncomplete(_ context.Context, endedAt time.Time, reason string) error {

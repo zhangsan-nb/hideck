@@ -70,20 +70,22 @@ func publicSMSReceived(value events.EventSMSReceived) eventhost.SMSReceived {
 		DevID: value.DevID, Sender: value.Sender, TargetURI: value.TargetURI,
 		Content: value.Content, Time: value.Time,
 		FragmentSessionKey: value.FragmentSessionKey, Incomplete: value.Incomplete,
+		ICCID: value.ICCID, IMSI: value.IMSI, PersistenceResult: value.PersistenceResult,
 	}
 }
 
 func publicSMSSent(value events.EventSMSSent) eventhost.SMSSent {
 	return eventhost.SMSSent{
 		DevID: value.DevID, TargetURI: value.TargetURI, Content: value.Content,
-		Time: value.Time, TotalParts: value.TotalParts,
+		Time: value.Time, TotalParts: value.TotalParts, MessageID: value.MessageID,
+		ICCID: value.ICCID, IMSI: value.IMSI,
 	}
 }
 
 func publicLocalNumberLearned(value events.EventLocalNumberLearned) eventhost.LocalNumberLearned {
 	return eventhost.LocalNumberLearned{
 		DevID: value.DevID, IMSI: value.IMSI, Number: value.Number, Source: value.Source,
-		Time: value.Time,
+		Time: value.Time, ICCID: value.ICCID,
 	}
 }
 

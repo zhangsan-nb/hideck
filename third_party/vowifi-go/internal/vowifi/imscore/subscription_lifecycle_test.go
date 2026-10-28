@@ -37,8 +37,17 @@ func TestREGISTERRefreshDoesNotRestartRejectedSubscriptions(t *testing.T) {
 }
 
 func newSubscriptionLifecycleTestService(t *testing.T, store *SubscriptionRegistrationStore) *Service {
+	return newSubscriptionLifecycleTestServiceForPreset(t, store, "")
+}
+
+func newSubscriptionLifecycleTestServiceForPreset(
+	t *testing.T,
+	store *SubscriptionRegistrationStore,
+	preset string,
+) *Service {
 	t.Helper()
 	s := newProtectedKeepaliveTestService(t)
+	s.cfg.CarrierPresetID = preset
 	client, peer := net.Pipe()
 	t.Cleanup(func() { _ = peer.Close() })
 	s.activateProtectedRegistrationTCP(client)
@@ -227,8 +236,7 @@ func storeMWIRejection(s *Service) int {
 }
 
 func Test2degreesMWIRejectionDoesNotChangeOnDemandSMSReadiness(t *testing.T) {
-	s := newSubscriptionLifecycleTestService(t, nil)
-	s.cfg.CarrierPresetID = "2degrees_nz_53024"
+	s := newSubscriptionLifecycleTestServiceForPreset(t, nil, "2degrees_nz_53024")
 	rejectSubscriptionForTest(t, s, true)
 	push, peer := net.Pipe()
 	t.Cleanup(func() { _ = push.Close(); _ = peer.Close() })

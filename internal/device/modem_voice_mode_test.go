@@ -1,6 +1,7 @@
 package device
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -45,7 +46,7 @@ func TestModemVoiceExcludedFromSoftwareIMS(t *testing.T) {
 	if err := p.EnableVoWiFi(w.ID); !errors.Is(err, ErrModemVoiceSoftwareIMS) {
 		t.Fatalf("enable: %v", err)
 	}
-	if _, err := p.prepareVoWiFiStartContext(w.ID, "test", ""); !errors.Is(err, ErrModemVoiceSoftwareIMS) {
+	if _, err := p.prepareVoWiFiStartContext(context.Background(), w.ID, "test", ""); !errors.Is(err, ErrModemVoiceSoftwareIMS) {
 		t.Fatalf("delayed recovery: %v", err)
 	}
 	if shouldRetryVoWiFiAutoStart(ErrModemVoiceSoftwareIMS) {

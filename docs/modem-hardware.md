@@ -63,3 +63,7 @@ MBIM 支持取决于具体硬件和固件的 USB 组合，不能只看产品系�
 3. `DeviceCaps` 能返回当前模组 IMEI。
 
 只出现 `cdc_mbim` 接口不足以证明协议可用。当前测试的大疆定制 EC25 在 `usbnet=2` 时可以枚举 `cdc_mbim`，但标准 `OPEN` 无响应，因此 HiDeck 会拒绝持久化 MBIM 并保留或恢复 QMI 配置。其他型号必须逐台验证。
+
+## EC20 / OrbStack QMI 请求重叠
+
+部分 macOS + OrbStack USB 直通环境中，EC20 在 QMI 请求重叠时会出现 framing error、EOF 或控制面恢复循环。可使用默认关闭的 `HIDECK_QMI_SERIAL_REQUESTS=1` 兼容模式；配置方式、复现步骤和验证边界见 [QMI 请求串行兼容说明](qmi-serial-requests.md)。

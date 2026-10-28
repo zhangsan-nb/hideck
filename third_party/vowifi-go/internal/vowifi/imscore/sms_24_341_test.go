@@ -179,29 +179,45 @@ func TestNotifySMSMemoryAvailableAbortOnStop(t *testing.T) {
 	}
 }
 
-func TestInboundPersistFailureSendsRPError22(t *testing.T) {
+func TestInboundPersistFailureSendsTemporaryErrorWithoutBlockingNextSMS(t *testing.T) {
 	service, subscriber, outbound := newInboundSMSTestService(t)
+	persistCalls := 0
 	subscriber.onEvent = func(event events.Event) {
-		if _, ok := event.(*events.EventSMSReceived); ok {
-			service.SetSMSMemoryFull(true)
+		if received, ok := event.(*events.EventSMSReceived); ok {
+			persistCalls++
+			if persistCalls == 1 {
+				received.PersistenceResult <- errors.New("database temporarily unavailable")
+				return
+			}
+			received.PersistenceResult <- nil
 		}
 	}
-	raw := inboundSMSRequest(t, imsSMSContentType, inboundRPData(t, 0x61, "+447700900123", "held"))
-	if err := service.dispatchInboundSIP(raw, func(string) error { return nil }); err != nil {
+	first := inboundSMSRequest(t, imsSMSContentType, inboundRPData(t, 0x61, "+447700900123", "retry me"))
+	if err := service.dispatchInboundSIP(first, func(string) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-subscriber.events:
-	case <-time.After(time.Second):
-		t.Fatal("inbound SMS event was not published")
-	}
+	<-subscriber.events
 	request := waitForOutboundSMSControl(t, outbound)
 	body, err := rawSIPBody(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(body, smscodec.BuildRPError(0x61, smscodec.RPCauseMemoryCapacityExceeded)) {
+	if !bytes.Equal(body, smscodec.BuildRPError(0x61, smscodec.RPCauseTemporaryFailure)) {
 		t.Fatalf("persist-failure RP body = %x", body)
+	}
+
+	second := inboundSMSRequest(t, imsSMSContentType, inboundRPData(t, 0x62, "+447700900123", "store me"))
+	if err := service.dispatchInboundSIP(second, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	<-subscriber.events
+	request = waitForOutboundSMSControl(t, outbound)
+	body, err = rawSIPBody(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, smscodec.BuildRPAck(0x62)) {
+		t.Fatalf("next-message RP body = %x", body)
 	}
 }
 

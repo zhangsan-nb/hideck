@@ -23,6 +23,8 @@ type routedSMSSendResult struct {
 	Outcome      messaging.SendOutcome
 	FellBackToCS bool
 	Destination  string
+	Identity     SMSIdentity
+	IdentityRead bool
 }
 
 // ShouldFallbackVoWiFiSMSToCS reports whether IMS never accepted the MESSAGE.
@@ -83,8 +85,15 @@ func (p *Pool) SendRoutedSMS(
 	deviceID := worker.ID
 	destination := strings.TrimSpace(phone)
 	checkOwner := p.outboundOwnerCheck(worker)
+	identity, identityErr := p.ResolveSMSIdentity(deviceID)
+	if identityErr != nil {
+		return routedSMSSendResult{}, fmt.Errorf("sms route: resolve SIM identity: %w", identityErr)
+	}
+	if err := checkOwner(); err != nil {
+		return routedSMSSendResult{Identity: identity, IdentityRead: true}, err
+	}
 	if err := p.authorizeSMS(ctx, outboundSMSRequest{Worker: worker, To: destination, Text: message, Options: opts}); err != nil {
-		return routedSMSSendResult{}, err
+		return routedSMSSendResult{Identity: identity, IdentityRead: true}, err
 	}
 	p.mu.RLock()
 	sendVoWiFiHook := p.routedVoWiFiSMSSend
@@ -93,18 +102,29 @@ func (p *Pool) SendRoutedSMS(
 	result, err := sendRoutedSMS(
 		p.ShouldRouteSMSViaVoWiFi(deviceID),
 		func() (messaging.SendOutcome, error) {
-			if err := checkOwner(); err != nil {
-				return messaging.SendOutcome{}, err
-			}
 			if sendVoWiFiHook != nil {
+				release, err := p.acquireOutboundOperation(worker)
+				if err != nil {
+					return messaging.SendOutcome{}, err
+				}
+				defer release()
+				if err := checkOwner(); err != nil {
+					return messaging.SendOutcome{}, err
+				}
 				return sendVoWiFiHook(ctx, deviceID, destination, message, opts)
 			}
 			return p.sendVoWiFiSMS(ctx, voWiFiSMSSendRequest{
 				DeviceID: deviceID, To: destination, Text: message, Check: checkOwner,
+				Acquire: func() (func(), error) { return p.acquireOutboundOperation(worker) },
 				Options: messaging.SendOptions{Encoding: string(opts.Encoding)},
 			})
 		},
 		func() error {
+			release, err := p.acquireOutboundOperation(worker)
+			if err != nil {
+				return err
+			}
+			defer release()
 			if err := checkOwner(); err != nil {
 				return err
 			}
@@ -115,6 +135,8 @@ func (p *Pool) SendRoutedSMS(
 		},
 	)
 	result.Destination = destination
+	result.Identity = identity
+	result.IdentityRead = true
 	return result, err
 }
 
@@ -124,6 +146,21 @@ func (p *Pool) AttachWorkerForTest(worker *Worker) {
 		return
 	}
 	_ = p.registerWorkerStarting(worker)
+}
+
+// AttachWorkerWithSMSIdentityForTest registers a worker whose SIM identity is
+// already stable, allowing external package tests to exercise outbound SMS.
+func (p *Pool) AttachWorkerWithSMSIdentityForTest(worker *Worker, identity SMSIdentity) {
+	if p == nil || worker == nil {
+		return
+	}
+	worker.cacheMu.Lock()
+	worker.state.Identity.ICCID = identity.ICCID
+	worker.state.Identity.IMSI = identity.IMSI
+	worker.state.Identity.Ready = true
+	worker.state.Identity.Phase = simIdentityPhaseReady
+	worker.cacheMu.Unlock()
+	p.AttachWorkerForTest(worker)
 }
 
 // SetRoutedSMSTestSenders overrides the VoWiFi and CS legs of SendRoutedSMS for tests.
@@ -147,6 +184,7 @@ type voWiFiSMSRuntime interface {
 
 type voWiFiSMSSendRequest struct {
 	Check    func() error
+	Acquire  func() (func(), error)
 	DeviceID string
 	To       string
 	Text     string
@@ -160,6 +198,13 @@ func (r voWiFiSMSSendRequest) checkOwner() error {
 		return r.Check()
 	}
 	return nil
+}
+
+func (r voWiFiSMSSendRequest) acquire() (func(), error) {
+	if r.Acquire == nil {
+		return func() {}, nil
+	}
+	return r.Acquire()
 }
 
 func sendVoWiFiSMSWhenReady(
@@ -176,10 +221,16 @@ func sendVoWiFiSMSWhenReady(
 			state := runtime.State()
 			lastReason = voWiFiSMSWaitReason(state)
 			if state.SMSMOReady || state.SMSReady || !shouldWaitForVoWiFiSMS(state) {
+				release, err := request.acquire()
+				if err != nil {
+					return messaging.SendOutcome{}, err
+				}
 				if err := request.checkOwner(); err != nil {
+					release()
 					return messaging.SendOutcome{}, err
 				}
 				outcome, err := runtime.SendSMSWithOptions(ctx, request.To, request.Text, request.Options)
+				release()
 				if err == nil || !errors.Is(err, messaging.ErrSMSNotReady) {
 					return outcome, err
 				}

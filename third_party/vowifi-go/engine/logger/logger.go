@@ -68,6 +68,18 @@ func initLogger(level, format string) error {
 	return nil
 }
 
+// Set routes engine logs through a host logger, for example one that also
+// writes the host's log file. It must not add its own caller skip. A later
+// Init call keeps the installed logger.
+func Set(l *zap.Logger) {
+	if l == nil {
+		return
+	}
+	initOnce.Do(func() {})
+	global.Store(l)
+	globalSugar.Store(l.Sugar())
+}
+
 func parseLevel(level string) zapcore.Level {
 	switch level {
 	case "debug":

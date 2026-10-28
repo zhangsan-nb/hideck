@@ -45,7 +45,7 @@ defineEmits<{
     <template #icon><el-icon><Earth24Regular /></el-icon></template>
 
     <div class="proxy-probe-toolbar">
-      <label><input v-model="autoProbe" type="checkbox" />每分钟自动检测</label>
+      <el-checkbox v-model="autoProbe">每分钟自动检测</el-checkbox>
       <span>{{ autoProbe ? '打开此页时更新；关闭页面后停止' : '自动检测已暂停，可点击刷新重新检测' }}</span>
     </div>
 
@@ -125,8 +125,8 @@ defineEmits<{
 <style scoped>
 .proxy-table-wrap { min-width: 0; }
 .proxy-probe-toolbar { padding: 8px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; border-bottom: 1px solid var(--ui-border); color: var(--ui-text-muted); font-size: var(--ui-font-body-sm); }
-.proxy-probe-toolbar label { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; color: var(--ui-text); cursor: pointer; }
-.proxy-probe-toolbar input { width: 18px; height: 18px; accent-color: var(--ui-communication); }
+.proxy-probe-toolbar :deep(.el-checkbox) { min-height: 44px; margin-right: 0; }
+.proxy-probe-toolbar :deep(.el-checkbox__label) { color: var(--ui-text); }
 .proxy-observation-meta { display: block; margin-top: 5px; color: var(--ui-text-muted); font-size: var(--ui-font-caption); line-height: 1.5; }
 .proxy-egress-ip { display: block; margin-top: 6px; }
 .proxy-egress-warning { display: block; margin-top: 6px; color: var(--ui-warning); font-size: var(--ui-font-caption); line-height: 1.5; }

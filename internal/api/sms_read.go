@@ -31,6 +31,16 @@ func (request markSMSThreadReadRequest) valid() bool {
 }
 
 func (s *Server) handleMarkSMSThreadRead(c *gin.Context) {
+	s.useMarkSMSThreadRead(c)
+}
+
+func (s *Server) useMarkSMSThreadRead(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	iccid := db.CanonicalICCID(c.Query("iccid"))
 	if iccid == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少 iccid 参数"})

@@ -19,6 +19,16 @@ type deviceVoWiFiCallRequest struct {
 }
 
 func (s *Server) handleDeviceVoWiFiCall(c *gin.Context) {
+	s.useDeviceVoWiFiCall(c)
+}
+
+func (s *Server) useDeviceVoWiFiCall(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	deviceID := strings.TrimSpace(c.Param("device_id"))
 	var req deviceVoWiFiCallRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -37,7 +47,7 @@ func (s *Server) handleDeviceVoWiFiCall(c *gin.Context) {
 	}
 
 	traceID := requestID(c)
-	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(holdSeconds)*time.Second+voWiFiCallSetupGrace)
+	ctx, cancel := context.WithTimeout(businessRequestContext(c), time.Duration(holdSeconds)*time.Second+voWiFiCallSetupGrace)
 	defer cancel()
 	logger.Info("VoWiFi 外呼请求开始", "device", deviceID, "callee_suffix", maskedCallee(req.Callee), "hold_seconds", holdSeconds, "trace_id", traceID)
 	result, err := s.simulateCall(ctx, deviceID, voicehost.SimulateCallRequest{

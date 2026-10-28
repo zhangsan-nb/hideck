@@ -112,7 +112,7 @@ func (m *Manager) enableRuntime(ctx context.Context, req runtimeEnableRequest) (
 		}
 	}()
 
-	preparedStart, err := m.PrepareStart(deviceID, traceID, req.OverrideEPDG)
+	preparedStart, err := m.PrepareStart(startCtx, deviceID, traceID, req.OverrideEPDG)
 	if startCtx.Err() != nil || !m.ShouldRun(deviceID, startupEpoch) {
 		return context.Canceled
 	}

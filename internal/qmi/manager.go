@@ -2132,6 +2132,13 @@ func (m *Manager) EnsureIMSClients(ctx context.Context) error {
 	return m.qmiMgr.EnsureIMSClients(ctx)
 }
 
+func (m *Manager) EnsureVOICEIndications(ctx context.Context) error {
+	if m == nil || m.qmiMgr == nil {
+		return qmimanager.ErrServiceNotReady("VOICE")
+	}
+	return m.qmiMgr.EnsureVOICEIndications(ctx)
+}
+
 func (m *Manager) ReleaseIMSClients() error {
 	if m == nil || m.qmiMgr == nil {
 		return nil
@@ -2140,19 +2147,27 @@ func (m *Manager) ReleaseIMSClients() error {
 }
 
 func (m *Manager) OnIMSRegistrationStatus(handler func(*qmi.IMSARegistrationStatus)) error {
+	_, err := m.SubscribeIMSRegistrationStatus(handler)
+	return err
+}
+
+func (m *Manager) SubscribeIMSRegistrationStatus(handler func(*qmi.IMSARegistrationStatus)) (func(), error) {
 	if m == nil || m.qmiMgr == nil || handler == nil {
-		return qmimanager.ErrServiceNotReady("IMSA")
+		return nil, qmimanager.ErrServiceNotReady("IMSA")
 	}
-	m.qmiMgr.OnIMSRegistrationStatus(handler)
-	return nil
+	return m.qmiMgr.SubscribeIMSRegistrationStatus(handler), nil
 }
 
 func (m *Manager) OnIMSServicesStatus(handler func(*qmi.IMSAServicesStatus)) error {
+	_, err := m.SubscribeIMSServicesStatus(handler)
+	return err
+}
+
+func (m *Manager) SubscribeIMSServicesStatus(handler func(*qmi.IMSAServicesStatus)) (func(), error) {
 	if m == nil || m.qmiMgr == nil || handler == nil {
-		return qmimanager.ErrServiceNotReady("IMSA")
+		return nil, qmimanager.ErrServiceNotReady("IMSA")
 	}
-	m.qmiMgr.OnIMSServicesStatus(handler)
-	return nil
+	return m.qmiMgr.SubscribeIMSServicesStatus(handler), nil
 }
 
 func (m *Manager) IMSAGetIMSRegistrationStatus(ctx context.Context) (*qmi.IMSARegistrationStatus, error) {
@@ -2219,11 +2234,15 @@ func (m *Manager) VOICEGetAllCallInfo(ctx context.Context) (*qmi.VoiceAllCallInf
 }
 
 func (m *Manager) OnVoiceCallStatus(handler func(*qmi.VoiceAllCallInfo)) error {
+	_, err := m.SubscribeVoiceCallStatus(handler)
+	return err
+}
+
+func (m *Manager) SubscribeVoiceCallStatus(handler func(*qmi.VoiceAllCallInfo)) (func(), error) {
 	if m == nil || m.qmiMgr == nil || handler == nil {
-		return qmimanager.ErrServiceNotReady("VOICE")
+		return nil, qmimanager.ErrServiceNotReady("VOICE")
 	}
-	m.qmiMgr.OnVoiceCallStatus(handler)
-	return nil
+	return m.qmiMgr.SubscribeVoiceCallStatus(handler), nil
 }
 
 func (m *Manager) VOICEOriginateUSSD(ctx context.Context, req qmi.VoiceUSSDRequest) (*qmi.VoiceUSSDResponse, error) {

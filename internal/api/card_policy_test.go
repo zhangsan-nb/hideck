@@ -142,6 +142,54 @@ func TestPutCardPolicyCanClearAPN(t *testing.T) {
 	}
 }
 
+func TestPutCardPolicySavesAndClearsManualPhoneWithoutRestart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &cardPolicyStoreStub{policy: db.CardPolicy{ICCID: "8986005", IPVersion: "v4"}}
+	restarter := &cardPolicyRestarterStub{}
+	s := &Server{cardPolicies: store, cardPolicyRestarter: restarter}
+	r := gin.New()
+	r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+	put := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := put(`{"local_phone_override":"  +447911123456  "}`); w.Code != http.StatusOK {
+		t.Fatalf("save code=%d response=%s", w.Code, w.Body.String())
+	}
+	if store.policy.LocalPhoneOverride != "+447911123456" {
+		t.Fatalf("manual number=%q", store.policy.LocalPhoneOverride)
+	}
+	if w := put(`{"local_phone_override":""}`); w.Code != http.StatusOK {
+		t.Fatalf("clear code=%d response=%s", w.Code, w.Body.String())
+	}
+	if store.policy.LocalPhoneOverride != "" {
+		t.Fatalf("manual number was not cleared: %+v", store.policy)
+	}
+	if restarter.iccid != "" {
+		t.Fatalf("manual number restarted VoWiFi for %q", restarter.iccid)
+	}
+}
+
+func TestPutCardPolicyRejectsInvalidManualPhone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &cardPolicyStoreStub{policy: db.CardPolicy{ICCID: "8986005", IPVersion: "v4"}}
+	s := &Server{cardPolicies: store}
+	r := gin.New()
+	r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(`{"local_phone_override":"+44 7911"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || store.policy.LocalPhoneOverride != "" {
+		t.Fatalf("code=%d policy=%+v body=%s", w.Code, store.policy, w.Body.String())
+	}
+}
+
 func TestPutCardPolicyVoWiFiUpstreamProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	openTestDB(t)

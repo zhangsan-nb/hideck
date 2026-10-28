@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yibaiba/hideck/internal/config"
+	"github.com/yibaiba/hideck/internal/phone"
 	"github.com/yibaiba/hideck/pkg/logger"
 )
 
@@ -20,6 +21,11 @@ type captureChannel struct {
 	mu    sync.Mutex
 	msgs  []string
 	calls []NotificationContext
+}
+
+type attachmentCaptureChannel struct {
+	captureChannel
+	attachments []CommandAttachment
 }
 
 type blockingChannel struct {
@@ -111,6 +117,18 @@ func (c *captureChannel) SendWithContext(ctx NotificationContext) error {
 func (c *captureChannel) RegisterCommand(_ string, _ CommandHandler) {}
 func (c *captureChannel) Start() error                               { return nil }
 func (c *captureChannel) Close() error                               { return nil }
+
+func (c *attachmentCaptureChannel) SendNotificationWithAttachments(
+	ctx NotificationContext,
+	attachments []CommandAttachment,
+) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, ctx)
+	c.msgs = append(c.msgs, ctx.Text)
+	c.attachments = append(c.attachments, attachments...)
+	return nil
+}
 
 func (c *captureChannel) Last() string {
 	c.mu.Lock()
@@ -506,6 +524,31 @@ func TestManagerNotifyCallResultIsSeparateFromIncomingCall(t *testing.T) {
 	want := notificationLines("未接来电", append([]string{"设备", "wwan0"}, phoneIdentityFields("主叫", "10086")...)...)
 	if result.Text != want {
 		t.Fatalf("result text=%q, want %q", result.Text, want)
+	}
+}
+
+func TestManagerNotifyAutoAnswerRecordingUsesAttachmentChannel(t *testing.T) {
+	capture := &attachmentCaptureChannel{}
+	m := &Manager{channels: []Channel{capture}}
+	at := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+	m.NotifyAutoAnswerRecording(phone.AutoAnswerRecordingNotification{
+		DeviceID: "wwan0", Peer: "+447700900123", RecordingPath: "/recordings/call.mp3",
+		RecordingName: "call.mp3", At: at,
+	})
+
+	waitUntil(t, time.Second, func() bool {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return len(capture.attachments) == 1
+	})
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.calls[0].Event != "call_recording" || capture.calls[0].Timestamp != at {
+		t.Fatalf("context = %+v", capture.calls[0])
+	}
+	attachment := capture.attachments[0]
+	if attachment.Path != "/recordings/call.mp3" || attachment.Codec != "MP3" || attachment.Recording != "call.mp3" {
+		t.Fatalf("attachment = %+v", attachment)
 	}
 }
 

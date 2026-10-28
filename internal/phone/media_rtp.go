@@ -69,53 +69,158 @@ func (s *MediaSession) forwardIMSRTP() {
 	go s.readIMSRTP(packets)
 	ticker := time.NewTicker(jitterTick)
 	defer ticker.Stop()
-	buffer := make(map[uint16]*rtp.Packet, mediaPacketBuffer)
-	var expected uint16
-	started := false
+	buffer := newIMSJitterBuffer()
+	var clock browserRTPClock
 	for {
 		select {
 		case packet := <-packets:
-			if !started {
-				expected, started = packet.SequenceNumber, true
+			previousSSRC, previousExpected := buffer.ssrc, buffer.expected
+			switch buffer.push(packet) {
+			case imsPacketLate:
+				// Its slot was already counted as lost when it was skipped.
+				s.imsLate.Add(1)
+			case imsStreamRestarted:
+				if s.imsRestarts.Add(1) == 1 {
+					logger.Info("IMS 下行语音换流，重新排队", "media_id", s.ID,
+						"previous_ssrc", previousSSRC, "ssrc", packet.SSRC,
+						"expected_seq", previousExpected, "seq", packet.SequenceNumber)
+				}
 			}
-			if len(buffer) >= mediaPacketBuffer {
-				s.lost.Add(1)
-				continue
-			}
-			buffer[packet.SequenceNumber] = packet
 		case <-ticker.C:
-			if !started || len(buffer) == 0 {
-				continue
-			}
-			packet := buffer[expected]
-			if packet == nil {
+			packet, gap := buffer.pop()
+			switch {
+			case gap:
 				s.lost.Add(1)
-				expected++
-				continue
+				clock.skip()
+			case packet == nil:
+				clock.idle()
+			default:
+				s.writeBrowserRTP(packet, &clock)
 			}
-			delete(buffer, expected)
-			expected++
-			s.writeBrowserRTP(packet)
 		case <-s.closed:
 			return
 		}
 	}
 }
 
-func (s *MediaSession) writeBrowserRTP(packet *rtp.Packet) {
+type imsPushResult int
+
+const (
+	imsPacketQueued imsPushResult = iota
+	imsPacketLate
+	imsStreamRestarted
+)
+
+// imsJitterBuffer plays one RTP stream in sequence order. It only holds packets
+// of the current SSRC within one buffer length ahead of the next one to play:
+// a packet left behind (another SSRC, or a sequence already skipped) would keep
+// the buffer non-empty, so every tick would skip the next packet as lost.
+// Early media can interleave a second SSRC before the answer; switching to it
+// restarts the buffer, and switching back restarts it again.
+type imsJitterBuffer struct {
+	packets  map[uint16]*rtp.Packet
+	ssrc     uint32
+	expected uint16
+	started  bool
+}
+
+func newIMSJitterBuffer() *imsJitterBuffer {
+	return &imsJitterBuffer{packets: make(map[uint16]*rtp.Packet, mediaPacketBuffer)}
+}
+
+func (b *imsJitterBuffer) push(packet *rtp.Packet) imsPushResult {
+	offset := int(int16(packet.SequenceNumber - b.expected))
+	result := imsPacketQueued
+	if !b.started || packet.SSRC != b.ssrc || offset >= mediaPacketBuffer || offset < -mediaPacketBuffer {
+		if b.started {
+			result = imsStreamRestarted
+		}
+		clear(b.packets)
+		b.ssrc, b.expected, b.started = packet.SSRC, packet.SequenceNumber, true
+		offset = 0
+	}
+	if offset < 0 {
+		return imsPacketLate
+	}
+	b.packets[packet.SequenceNumber] = packet
+	return result
+}
+
+// pop returns the packet due on this tick. gap reports a missing packet that
+// was skipped because later ones are already buffered.
+func (b *imsJitterBuffer) pop() (packet *rtp.Packet, gap bool) {
+	if len(b.packets) == 0 {
+		return nil, false
+	}
+	packet = b.packets[b.expected]
+	delete(b.packets, b.expected)
+	b.expected++
+	return packet, packet == nil
+}
+
+// browserRTPClock numbers the packets sent to the browser. The browser track
+// keeps one SSRC for the whole call, so a new IMS stream must not move its
+// sequence numbers backwards: SRTP would reject the rest of the call as replayed.
+// It starts from the first IMS packet. The sequence advances once per packet,
+// lost ones too; the timestamp also advances on ticks with nothing to play
+// (DTX silence, a restarted stream), so it keeps up with real time and the
+// browser does not discard the speech that follows as late.
+type browserRTPClock struct {
+	sequence     uint16
+	timestamp    uint32
+	frameSamples uint32
+	started      bool
+}
+
+func (c *browserRTPClock) stamp(packet *rtp.Packet, samples int) {
+	if !c.started {
+		c.sequence, c.timestamp, c.started = packet.SequenceNumber, packet.Timestamp, true
+	}
+	packet.SequenceNumber, packet.Timestamp = c.sequence, c.timestamp
+	c.sequence++
+	c.frameSamples = uint32(samples)
+	c.timestamp += c.frameSamples
+}
+
+// skip accounts for a lost packet, assumed as long as the last one played.
+func (c *browserRTPClock) skip() {
+	if c.started {
+		c.sequence++
+		c.timestamp += c.frameSamples
+	}
+}
+
+// idle accounts for a tick with nothing to play.
+func (c *browserRTPClock) idle() {
+	if c.started {
+		c.timestamp += browserSamplesPerFrame
+	}
+}
+
+func (s *MediaSession) writeBrowserRTP(packet *rtp.Packet, clock *browserRTPClock) {
 	endpoint, codec, ok := s.endpoint()
 	if !ok {
 		return
 	}
+	payloadBytes := len(packet.Payload)
 	payload, err := imsPayloadForBrowser(packet.Payload, endpoint, codec)
 	if err != nil {
+		if s.imsRejected.Add(1) == 1 {
+			logger.Warn("IMS 下行语音包未转发", "media_id", s.ID, "codec", endpoint.Codec, "payload_type", packet.PayloadType, "payload_bytes", payloadBytes, "err", err)
+		}
 		s.lost.Add(1)
+		clock.skip()
 		return
 	}
 	packet.Payload = payload
 	s.recordMixedFrame(mixFromIMS, payload)
+	if s.track == nil {
+		s.fromIMS.Add(1)
+		return
+	}
 	packet.PayloadType = pcmPayloadType
 	packet.Timestamp = scaleTimestamp(packet.Timestamp, endpoint.ClockRate, browserClockRate)
+	clock.stamp(packet, len(payload))
 	if err := s.track.WriteRTP(packet); err == nil {
 		s.fromIMS.Add(1)
 	}

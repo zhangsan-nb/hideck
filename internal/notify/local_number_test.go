@@ -90,3 +90,52 @@ func TestLocalSIMLabelPrefersCapturedICCIDOverReusedIMSI(t *testing.T) {
 		t.Fatalf("localSIMLabel()=%q, want captured SIM number", got)
 	}
 }
+
+func TestLocalSIMLabelRejectsPhoneBoundToDifferentICCID(t *testing.T) {
+	if err := db.Init(filepath.Join(t.TempDir(), "notify_profile_conflict.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.DB = nil })
+	const (
+		imsi     = "234150000000047"
+		oldICCID = "8944100000000000046"
+		newICCID = "8944200000000000047"
+	)
+	if err := db.DB.Create(&db.SIMCard{ICCID: oldICCID, IMSI: imsi}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.Create(&db.SIMCard{ICCID: newICCID, IMSI: imsi}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.Create(&db.SIMSubscription{IMSI: imsi, CurrentICCID: newICCID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateSIMCardVoWiFiPhoneNumberByIMSI(imsi, "+447700900047"); err != nil {
+		t.Fatal(err)
+	}
+	if got := localSIMLabel(imsi, oldICCID, "GB"); got != "ICCID 尾号 0046" {
+		t.Fatalf("localSIMLabel()=%q, want captured ICCID fallback", got)
+	}
+}
+
+func TestLocalSIMLabelPrefersManualCardNumber(t *testing.T) {
+	if err := db.Init(filepath.Join(t.TempDir(), "notify_manual_number.db")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.DB = nil })
+	const (
+		imsi  = "234150000000048"
+		iccid = "8944100000000000048"
+	)
+	if err := db.RecordVoWiFiPhoneNumber(imsi, iccid, "+447700900048"); err != nil {
+		t.Fatal(err)
+	}
+	policy := db.DefaultCardPolicy(iccid)
+	policy.LocalPhoneOverride = "+447911000048"
+	if err := db.UpsertCardPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	if got := localSIMLabel(imsi, iccid, "GB"); got != "+447911000048" {
+		t.Fatalf("localSIMLabel()=%q, want manual number", got)
+	}
+}

@@ -796,10 +796,12 @@ func TestServingSystemIsCamped(t *testing.T) {
 }
 
 func TestHandleNASServingSystemChangedUncampsWhenVoWiFiSuppressesRadio(t *testing.T) {
-	p := &Pool{ctx: context.Background()}
+	p := NewPool(nil)
+	defer p.cancel()
 	stub := &workerStatusBackendStub{opMode: backend.ModeOnline}
 	w := &Worker{ID: "wwan0", Backend: stub}
 	w.setCellularRadioSuppressed(true)
+	p.AttachWorkerForTest(w)
 
 	p.handleNASServingSystemChanged(w, &qmi.ServingSystem{RegistrationState: qmi.RegStateRoaming, PSAttached: true})
 

@@ -84,6 +84,23 @@ test('volte still registering does not mark unfinished stages as failed', () => 
   assert.deepEqual(presentation.stages.map((stage) => stage.ready), [true, true, undefined, undefined, undefined])
 })
 
+test('volte exposes missing QMI voice indications even when IMS is registered', () => {
+  const presentation = createOverviewConnectionPresentation(device({
+    phone_mode: 'volte',
+    vowifi_enabled: true,
+    native_volte: {
+      phase: 'failed',
+      ims_registered: true,
+      voice_available: true,
+      voice_indications_ready: false,
+      last_error: 'ensure QMI VOICE indications failed'
+    }
+  }))
+
+  assert.equal(presentation.tone, 'is-failed')
+  assert.equal(presentation.stages.find((stage) => stage.key === 'Voice')?.ready, false)
+})
+
 test('wifi calling presentation stays on the ePDG path', () => {
   const presentation = createOverviewConnectionPresentation(device({
     phone_mode: 'wifi',

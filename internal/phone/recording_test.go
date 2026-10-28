@@ -57,6 +57,32 @@ func TestFinalizeRecordingPublishesMixedMP3AndPCAPMetadata(t *testing.T) {
 	}
 }
 
+func TestFinalizeAutoAnswerRecordingNotifiesMediaChannel(t *testing.T) {
+	gateway, store := newFakeVoiceGateway(), newMemoryCallStore()
+	service := newPhoneTestService(t, gateway, store, time.Second)
+	service.recordingDir = t.TempDir()
+	service.transcoder = &recordingTranscoder{}
+	recordings := make(chan AutoAnswerRecordingNotification, 1)
+	service.notifier = recordingCaptureNotifier{recordings: recordings}
+	call := recordingTestCall(service, "auto-recording-1")
+	call.autoAnswered = true
+	call.record.Peer = "+447700900123"
+	call.mixedAttempted = true
+	call.mixedAudioPath = filepath.Join(service.recordingDir, "call_auto_mixed.wav")
+	service.finalizeRecording(voicehost.CallEvent{Type: "CallFinalized", CallID: call.view.CallID})
+
+	select {
+	case notification := <-recordings:
+		if notification.DeviceID != "dev-1" || notification.Peer != "+447700900123" ||
+			notification.RecordingName != "call_auto_mixed.mp3" ||
+			notification.RecordingPath != filepath.Join(service.recordingDir, "call_auto_mixed.mp3") {
+			t.Fatalf("notification = %+v", notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auto-answer recording notification not published")
+	}
+}
+
 func TestFinalizeRecordingKeepsFailureSeparateFromCompletedCall(t *testing.T) {
 	gateway, store := newFakeVoiceGateway(), newMemoryCallStore()
 	service := newPhoneTestService(t, gateway, store, time.Second)
@@ -84,6 +110,18 @@ func TestFinalizeRecordingKeepsFailureSeparateFromCompletedCall(t *testing.T) {
 type recordingTranscoder struct {
 	input string
 	err   error
+}
+
+type recordingCaptureNotifier struct {
+	recordings chan AutoAnswerRecordingNotification
+}
+
+func (recordingCaptureNotifier) NotifyIncomingCall(string, string, string) {}
+
+func (recordingCaptureNotifier) NotifyCallResult(string, string, string, string, string, time.Time) {}
+
+func (n recordingCaptureNotifier) NotifyAutoAnswerRecording(notification AutoAnswerRecordingNotification) {
+	n.recordings <- notification
 }
 
 func TestFinalizeRecordingWaitsForTerminalCleanup(t *testing.T) {

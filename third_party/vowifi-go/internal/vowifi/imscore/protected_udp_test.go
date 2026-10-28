@@ -24,7 +24,6 @@ func listenProtectedTestUDP(t *testing.T) *net.UDPConn {
 
 func startProtectedTestUDP(t *testing.T, s *Service) (*protectedUDPTransport, *net.UDPConn, *net.UDPConn) {
 	t.Helper()
-	remoteC, remoteS := listenProtectedTestUDP(t), listenProtectedTestUDP(t)
 	client, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +38,6 @@ func startProtectedTestUDP(t *testing.T, s *Service) (*protectedUDPTransport, *n
 	s.cfg.LocalIP = net.IPv4(127, 0, 0, 1)
 	s.cfg.LocalAddr = s.cfg.LocalIP.String()
 	s.cfg.IMSNetwork = &captureIPSecNetwork{SystemIMSNetwork: NewSystemIMSNetwork(s.cfg.LocalIP)}
-	s.registrationRemote = cloneUDPAddr(remoteS.LocalAddr().(*net.UDPAddr))
 	s.externalTransport = false
 	s.protectedClientPort, s.protectedServerPort = tcpPort(client.Addr()), tcpPort(server.Addr())
 	s.mu.Unlock()
@@ -47,7 +45,11 @@ func startProtectedTestUDP(t *testing.T, s *Service) (*protectedUDPTransport, *n
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reserve local UDP ports before allocating peers on the same loopback IP;
+	// TCP's ephemeral allocator cannot see ports already used by UDP peers.
+	remoteC, remoteS := listenProtectedTestUDP(t), listenProtectedTestUDP(t)
 	s.mu.Lock()
+	s.registrationRemote = cloneUDPAddr(remoteS.LocalAddr().(*net.UDPAddr))
 	s.securityServerIO = reserved
 	s.mu.Unlock()
 	err = s.startProtectedUDP(

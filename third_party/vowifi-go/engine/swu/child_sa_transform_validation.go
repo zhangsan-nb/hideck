@@ -31,11 +31,21 @@ func validateESPSelection(proposal *ikev2.Proposal, offer childSAOffer) (uint32,
 	if err != nil {
 		return 0, selectedAlgorithms{}, 0, false, err
 	}
-	esn, err := validateESPPFSAndESN(transforms, offer.dhGroup, offer.esn)
+	// RFC 7296 3.3.5 defines no D-H transform attributes and 3.3.6 has the
+	// responder return the transforms it accepted, so none may come back.
+	if dh := transforms[ikev2.TransformTypeDH]; dh != nil && len(dh.Attributes) != 0 {
+		return 0, selectedAlgorithms{}, 0, false, errors.New("swu: CHILD_SA D-H selection carries attributes")
+	}
+	dhGroup := offer.dhGroup
+	if offer.dhNoneOffered && noneDHSelected(transforms) {
+		dhGroup = 0
+		delete(transforms, ikev2.TransformTypeDH)
+	}
+	esn, err := validateESPPFSAndESN(transforms, dhGroup, offer.esn)
 	if err != nil {
 		return 0, selectedAlgorithms{}, 0, false, err
 	}
-	return spi, algorithms, offer.dhGroup, esn, nil
+	return spi, algorithms, dhGroup, esn, nil
 }
 
 func validateESPAlgorithms(
@@ -118,6 +128,13 @@ func offeredESPKeyBitsForProposal(proposals []*ikev2.Proposal, number uint8, enc
 		}
 	}
 	return 0
+}
+
+// noneDHSelected reports a responder that took the offered NONE: D-H
+// transform 0, or none at all.
+func noneDHSelected(transforms map[ikev2.TransformType]*ikev2.Transform) bool {
+	dh := transforms[ikev2.TransformTypeDH]
+	return dh == nil || dh.ID == 0
 }
 
 func validateESPPFSAndESN(

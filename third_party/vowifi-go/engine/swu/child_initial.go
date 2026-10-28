@@ -22,7 +22,7 @@ func (s *Session) createInitialChildSA(ctx context.Context) error {
 		return err
 	}
 	espProposals := buildESPProposalsForSession(s, localSPI)
-	childDH, err := s.newChildSARekeyDH()
+	childDH, err := s.newChildSARekeyDH(s.currentChildDHGroup())
 	if err != nil {
 		return err
 	}

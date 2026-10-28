@@ -53,6 +53,8 @@ test('proxy mode change is transform-opacity only and reduced-motion safe', () =
 test('proxy controls retain real runtime facts and accessible actions', () => {
   assert.match(modeSwitch, /aria-current/)
   assert.match(modeSwitch, /min-height: 58px/)
+  assert.match(upstreamInventory, /<el-checkbox v-model="autoProbe">/)
+  assert.doesNotMatch(upstreamInventory, /<input[^>]+type="checkbox"/)
   assert.match(outboundInventory, /row\.lastError/)
   assert.match(outboundInventory, /:disabled="!row\.enabled"/)
 

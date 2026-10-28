@@ -108,8 +108,10 @@ func ResolveIPFamily(in string) (enableV4 bool, enableV6 bool, err error) {
 }
 
 type Config struct {
+	MCP            MCPConfig        `mapstructure:"mcp"`
 	ModemVoice     ModemVoiceConfig `mapstructure:"modem_voice"`
 	OutboundLimits outbound.Config  `mapstructure:"outbound_limits"`
+	Archive        ArchiveConfig    `mapstructure:"archive"`
 	Server         ServerConfig     `mapstructure:"server"`
 	System         SystemConfig     `mapstructure:"system"`
 	Devices        []DeviceConfig   `mapstructure:"devices"`
@@ -134,8 +136,33 @@ type Config struct {
 	NotificationDeviceFilters map[string][]string `mapstructure:"notification_device_filters"`
 }
 
+type ArchiveConfig struct {
+	Enabled           bool   `mapstructure:"enabled" json:"enabled"`
+	Endpoint          string `mapstructure:"endpoint" json:"endpoint"`
+	Username          string `mapstructure:"username" json:"username"`
+	Password          string `mapstructure:"password" json:"-"`
+	BasePath          string `mapstructure:"base_path" json:"base_path"`
+	IntervalHours     int    `mapstructure:"interval_hours" json:"interval_hours"`
+	RetentionDays     int    `mapstructure:"retention_days" json:"retention_days"`
+	AutoCleanup       bool   `mapstructure:"auto_cleanup" json:"auto_cleanup"`
+	IncludeSMS        bool   `mapstructure:"include_sms" json:"include_sms"`
+	IncludeCalls      bool   `mapstructure:"include_calls" json:"include_calls"`
+	IncludeRecordings bool   `mapstructure:"include_recordings" json:"include_recordings"`
+}
+
 type SystemConfig struct {
-	OpenWRTDynamicInterfaces bool `mapstructure:"openwrt_dynamic_interfaces" json:"openwrt_dynamic_interfaces"`
+	OpenWRTDynamicInterfaces bool             `mapstructure:"openwrt_dynamic_interfaces" json:"openwrt_dynamic_interfaces"`
+	AutoAnswer               AutoAnswerConfig `mapstructure:"auto_answer" json:"auto_answer"`
+}
+
+type AutoAnswerConfig struct {
+	AudioFile string                            `mapstructure:"audio_file" json:"audio_file"`
+	Devices   map[string]AutoAnswerDeviceConfig `mapstructure:"devices" json:"devices"`
+}
+
+type AutoAnswerDeviceConfig struct {
+	Enabled      bool `mapstructure:"enabled" json:"enabled"`
+	DelaySeconds int  `mapstructure:"delay_seconds" json:"delay_seconds"`
 }
 
 // ProxyConfig 定义代理服务配置
@@ -295,13 +322,14 @@ type WeComBotConfig struct {
 }
 
 type WebhookConfig struct {
-	Enabled      bool              `mapstructure:"enabled"`
-	URLs         []string          `mapstructure:"urls"`
-	Secret       string            `mapstructure:"secret"`
-	TimeoutMs    int               `mapstructure:"timeout_ms"`
-	RetryMax     int               `mapstructure:"retry_max"`
-	TextTemplate string            `mapstructure:"text_template"`
-	Headers      map[string]string `mapstructure:"headers,omitempty" json:"headers,omitempty"`
+	Enabled         bool              `mapstructure:"enabled"`
+	URLs            []string          `mapstructure:"urls"`
+	Secret          string            `mapstructure:"secret"`
+	TimeoutMs       int               `mapstructure:"timeout_ms"`
+	RetryMax        int               `mapstructure:"retry_max"`
+	TextTemplate    string            `mapstructure:"text_template"`
+	PayloadTemplate string            `mapstructure:"payload_template"`
+	Headers         map[string]string `mapstructure:"headers,omitempty" json:"headers,omitempty"`
 }
 
 type BarkConfig struct {
@@ -358,6 +386,13 @@ func Load(path string) (*Config, error) {
 	// 默认值设置
 	viper.SetDefault("server.port", 7575)
 	viper.SetDefault("system.openwrt_dynamic_interfaces", false)
+	viper.SetDefault("system.auto_answer.audio_file", "data/phone/auto-answer.wav")
+	viper.SetDefault("archive.base_path", "hideck")
+	viper.SetDefault("archive.interval_hours", 24)
+	viper.SetDefault("archive.retention_days", 30)
+	viper.SetDefault("archive.include_sms", true)
+	viper.SetDefault("archive.include_calls", true)
+	viper.SetDefault("archive.include_recordings", true)
 	viper.SetDefault("telegram.recording_mode", TelegramRecordingModeVoice)
 	viper.SetDefault("webhook.timeout_ms", 5000)
 	viper.SetDefault("webhook.retry_max", 3)

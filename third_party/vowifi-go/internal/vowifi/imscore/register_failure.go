@@ -1,12 +1,15 @@
 package imscore
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
 	enginesim "github.com/iniwex5/vowifi-go/engine/sim"
+	"github.com/iniwex5/vowifi-go/internal/vowifi/logging"
 	"github.com/iniwex5/vowifi-go/internal/vowifi/policy"
 )
 
@@ -132,4 +135,47 @@ func (p registerRetryPolicy) ShouldRetryDefaultInitial(statusCode int, warning, 
 	}
 	_, retry := p.defaultInitialRetryStatusCode[statusCode]
 	return retry
+}
+
+// isProtectedPortConflict matches a re-REGISTER rejected because its protected
+// client port is already in the P-CSCF SA table. TS 33.203 7.1 rule 3 makes the
+// P-CSCF check this and rule 6 lets the UE retry with new ports. Globe PH
+// rejects every refresh that offers the current SA ports this way.
+func isProtectedPortConflict(err error) bool {
+	var responseErr *registerResponseError
+	return errors.As(err, &responseErr) && responseErr.statusCode == 500 &&
+		strings.Contains(strings.ToLower(responseErr.message), "ip+port conflict")
+}
+
+// registerWithFreshProtectedPorts drops the current SA and transport and runs
+// an initial registration, which reserves and offers new protected ports.
+// Called with registerMu held. The registration starts over in the configured
+// transport order and has only what is left of the refresh deadline.
+func (s *Service) registerWithFreshProtectedPorts(ctx context.Context, conflict error) (time.Duration, error) {
+	var budget time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = time.Until(deadline).Round(time.Millisecond)
+	}
+	logging.Info("IMS re-REGISTER rejected for a protected port conflict; registering with new ports",
+		"device", s.DeviceID(), "pcscf", s.currentPortSRecoveryRegistrar(),
+		"previous_transport", s.currentRegistrationTransport(),
+		"transport_order", registerTransportCandidates(s.cfg.Transport), "budget", budget, "err", conflict)
+	if err := s.resetRegistrationForPCSCFSwitch(); err != nil {
+		logging.Info("IMS reset after protected port conflict failed",
+			"device", s.DeviceID(), "pcscf", s.currentPortSRecoveryRegistrar(), "err", err)
+		return 0, fmt.Errorf("imscore: reset registration after protected port conflict: %w", err)
+	}
+	started := time.Now()
+	expires, err := s.runRegisterFlow(ctx)
+	if err != nil {
+		logging.Info("IMS registration with new protected ports failed",
+			"device", s.DeviceID(), "pcscf", s.currentPortSRecoveryRegistrar(),
+			"last_transport", s.currentRegistrationTransport(), "elapsed", time.Since(started).Round(time.Millisecond),
+			"ctx_err", ctx.Err(), "err", err)
+		return expires, err
+	}
+	logging.Info("IMS registered with new protected ports",
+		"device", s.DeviceID(), "pcscf", s.currentPortSRecoveryRegistrar(),
+		"transport", s.currentRegistrationTransport(), "elapsed", time.Since(started).Round(time.Millisecond))
+	return expires, nil
 }

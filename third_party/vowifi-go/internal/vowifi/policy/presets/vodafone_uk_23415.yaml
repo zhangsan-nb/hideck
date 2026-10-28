@@ -21,6 +21,8 @@ esp_proposals:
   - aes128-sha1
 ims_register_template:
   id: vodafone_uk_23415
+  # Its 488 recovery was built and tested on RP reports over port_us.
+  rp_report_over_port_us: true
   include_pani_authenticated: true
   strict_security_server_offer: true
   enable_initial_reject_fallback: false

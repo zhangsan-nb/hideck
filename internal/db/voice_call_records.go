@@ -62,6 +62,39 @@ func (store *VoiceCallStore) List(ctx context.Context, limit int) ([]phone.CallR
 	return records, nil
 }
 
+func (store *VoiceCallStore) Delete(ctx context.Context, ids []uint64) ([]phone.CallRecord, error) {
+	if len(ids) == 0 {
+		return []phone.CallRecord{}, nil
+	}
+	var deleted []phone.CallRecord
+	err := store.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var models []VoiceCallRecord
+		if err := tx.Where("id IN ?", ids).Find(&models).Error; err != nil {
+			return err
+		}
+		for _, model := range models {
+			if activeCallStatus(model.Status) {
+				return phone.ErrActiveCallHistoryDelete
+			}
+			deleted = append(deleted, voiceCallRecordToDomain(model))
+		}
+		if len(models) == 0 {
+			return nil
+		}
+		return tx.Delete(&VoiceCallRecord{}, "id IN ?", ids).Error
+	})
+	return deleted, err
+}
+
+func activeCallStatus(status string) bool {
+	switch status {
+	case phone.StatusCalling, phone.StatusRinging, phone.StatusWaiting, phone.StatusConnected:
+		return true
+	default:
+		return false
+	}
+}
+
 func (store *VoiceCallStore) AbandonIncomplete(ctx context.Context, endedAt time.Time, reason string) error {
 	var models []VoiceCallRecord
 	err := store.database.WithContext(ctx).Where(

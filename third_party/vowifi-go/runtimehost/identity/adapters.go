@@ -99,7 +99,7 @@ func preparedSessionFromInternal(value internalprofile.PreparedSession) Prepared
 
 func profileFromInternal(value internalprofile.Profile) Profile {
 	return Profile{
-		IMSI: value.IMSI, MCC: value.MCC, MNC: value.MNC, IMEI: value.IMEI,
+		ICCID: value.ICCID, IMSI: value.IMSI, MCC: value.MCC, MNC: value.MNC, IMEI: value.IMEI,
 		UserAgent: value.UserAgent, SMSC: value.SMSC, IMSDomain: value.IMSDomain,
 	}
 }

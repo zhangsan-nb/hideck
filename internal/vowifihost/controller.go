@@ -137,7 +137,7 @@ func (c *LifecycleController) Submit(ctx context.Context, cmd LifecycleCommand) 
 		return nil
 	}
 
-	if cmd.Kind == LifecycleCommandEnable && cmd.Generation == 0 && c.isActive != nil && c.isActive(cmd.DeviceID) {
+	if cmd.Kind == LifecycleCommandEnable && c.isActive != nil && c.isActive(cmd.DeviceID) {
 		logger.Debug("忽略重复 VoWiFi enable 命令",
 			"device", cmd.DeviceID,
 			"reason", strings.TrimSpace(cmd.Reason),

@@ -46,6 +46,10 @@ func (databaseCarrierRuleStore) DeleteCustomCarrierQueryRule(id string) error {
 }
 
 func (s *Server) handleBalanceQueryStart(c *gin.Context) {
+	s.useBalanceQueryStart(c)
+}
+
+func (s *Server) useBalanceQueryStart(c businessContext) {
 	if !s.requireBalance(c) {
 		return
 	}
@@ -58,6 +62,16 @@ func (s *Server) handleBalanceQueryStart(c *gin.Context) {
 }
 
 func (s *Server) handleDeviceBalanceQueryStart(c *gin.Context) {
+	s.useDeviceBalanceQueryStart(c)
+}
+
+func (s *Server) useDeviceBalanceQueryStart(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireBalance(c) {
 		return
 	}
@@ -65,17 +79,27 @@ func (s *Server) handleDeviceBalanceQueryStart(c *gin.Context) {
 }
 
 func (s *Server) handleDeviceManualBalancePut(c *gin.Context) {
+	s.useDeviceManualBalancePut(c)
+}
+
+func (s *Server) useDeviceManualBalancePut(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireBalance(c) {
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	limitBusinessJSON(c, 4096)
 	var request manualBalanceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "手动余额 JSON 无效"})
 		return
 	}
 	query, err := s.balance.SetManualBalance(
-		c.Request.Context(), c.Param("device_id"), request.Amount, request.Currency,
+		businessRequestContext(c), c.Param("device_id"), request.Amount, request.Currency,
 	)
 	if err != nil {
 		writeManualBalanceError(c, err, "手动余额保存失败")
@@ -85,10 +109,14 @@ func (s *Server) handleDeviceManualBalancePut(c *gin.Context) {
 }
 
 func (s *Server) handleDeviceManualBalanceGet(c *gin.Context) {
+	s.useDeviceManualBalanceGet(c)
+}
+
+func (s *Server) useDeviceManualBalanceGet(c businessContext) {
 	if !s.requireBalance(c) {
 		return
 	}
-	query, found, err := s.balance.GetManualBalance(c.Request.Context(), c.Param("device_id"))
+	query, found, err := s.balance.GetManualBalance(businessRequestContext(c), c.Param("device_id"))
 	if err != nil {
 		writeManualBalanceError(c, err, "手动余额读取失败")
 		return
@@ -101,18 +129,28 @@ func (s *Server) handleDeviceManualBalanceGet(c *gin.Context) {
 }
 
 func (s *Server) handleDeviceManualBalanceDelete(c *gin.Context) {
+	s.useDeviceManualBalanceDelete(c)
+}
+
+func (s *Server) useDeviceManualBalanceDelete(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireBalance(c) {
 		return
 	}
-	if _, err := s.balance.ClearManualBalance(c.Request.Context(), c.Param("device_id")); err != nil {
+	if _, err := s.balance.ClearManualBalance(businessRequestContext(c), c.Param("device_id")); err != nil {
 		writeManualBalanceError(c, err, "手动余额清除失败")
 		return
 	}
 	c.Status(http.StatusNoContent)
 }
 
-func (s *Server) startBalanceQuery(c *gin.Context, deviceID string) {
-	query, err := s.balance.StartQuery(c.Request.Context(), strings.TrimSpace(deviceID))
+func (s *Server) startBalanceQuery(c businessContext, deviceID string) {
+	query, err := s.balance.StartQuery(businessRequestContext(c), strings.TrimSpace(deviceID))
 	if err != nil {
 		writeBalanceError(c, err)
 		return
@@ -121,6 +159,10 @@ func (s *Server) startBalanceQuery(c *gin.Context, deviceID string) {
 }
 
 func (s *Server) handleBalanceQueryList(c *gin.Context) {
+	s.useBalanceQueryList(c)
+}
+
+func (s *Server) useBalanceQueryList(c businessContext) {
 	if !s.requireBalance(c) {
 		return
 	}
@@ -128,13 +170,17 @@ func (s *Server) handleBalanceQueryList(c *gin.Context) {
 }
 
 func (s *Server) handleDeviceBalanceQueryList(c *gin.Context) {
+	s.useDeviceBalanceQueryList(c)
+}
+
+func (s *Server) useDeviceBalanceQueryList(c businessContext) {
 	if !s.requireBalance(c) {
 		return
 	}
 	s.listBalanceQueries(c, c.Param("device_id"))
 }
 
-func (s *Server) listBalanceQueries(c *gin.Context, deviceID string) {
+func (s *Server) listBalanceQueries(c businessContext, deviceID string) {
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	if err != nil || limit < 1 || limit > 200 {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "limit 必须是 1 到 200"})
@@ -145,7 +191,7 @@ func (s *Server) listBalanceQueries(c *gin.Context, deviceID string) {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "before 必须是 RFC3339 时间"})
 		return
 	}
-	queries, err := s.balance.List(c.Request.Context(), strings.TrimSpace(deviceID), limit, before)
+	queries, err := s.balance.List(businessRequestContext(c), strings.TrimSpace(deviceID), limit, before)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
@@ -154,10 +200,14 @@ func (s *Server) listBalanceQueries(c *gin.Context, deviceID string) {
 }
 
 func (s *Server) handleBalanceQueryGet(c *gin.Context) {
+	s.useBalanceQueryGet(c)
+}
+
+func (s *Server) useBalanceQueryGet(c businessContext) {
 	if !s.requireBalance(c) {
 		return
 	}
-	query, found, err := s.balance.Get(c.Request.Context(), c.Param("query_id"))
+	query, found, err := s.balance.Get(businessRequestContext(c), c.Param("query_id"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
@@ -170,6 +220,10 @@ func (s *Server) handleBalanceQueryGet(c *gin.Context) {
 }
 
 func (s *Server) handleBalanceRules(c *gin.Context) {
+	s.useBalanceRules(c)
+}
+
+func (s *Server) useBalanceRules(c businessContext) {
 	if !s.requireCarrierRules(c) {
 		return
 	}
@@ -182,14 +236,34 @@ func (s *Server) handleBalanceRules(c *gin.Context) {
 }
 
 func (s *Server) handleBalanceRulePost(c *gin.Context) {
+	s.useBalanceRulePost(c)
+}
+
+func (s *Server) useBalanceRulePost(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	s.saveBalanceRule(c, "")
 }
 
 func (s *Server) handleBalanceRulePut(c *gin.Context) {
+	s.useBalanceRulePut(c)
+}
+
+func (s *Server) useBalanceRulePut(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	s.saveBalanceRule(c, c.Param("rule_id"))
 }
 
-func (s *Server) saveBalanceRule(c *gin.Context, pathID string) {
+func (s *Server) saveBalanceRule(c businessContext, pathID string) {
 	if !s.requireCarrierRules(c) {
 		return
 	}
@@ -210,6 +284,16 @@ func (s *Server) saveBalanceRule(c *gin.Context, pathID string) {
 }
 
 func (s *Server) handleBalanceRuleDelete(c *gin.Context) {
+	s.useBalanceRuleDelete(c)
+}
+
+func (s *Server) useBalanceRuleDelete(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireCarrierRules(c) {
 		return
 	}
@@ -220,7 +304,7 @@ func (s *Server) handleBalanceRuleDelete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func (s *Server) requireCarrierRules(c *gin.Context) bool {
+func (s *Server) requireCarrierRules(c businessContext) bool {
 	if s.carrierRules != nil {
 		return true
 	}
@@ -263,7 +347,7 @@ func formatBalanceCommandResult(query balance.Query) string {
 	return fmt.Sprintf("余额查询 / 已发送\n设备    %s\n查询ID  %s\n状态    等待运营商回复", query.DeviceID, query.ID)
 }
 
-func (s *Server) requireBalance(c *gin.Context) bool {
+func (s *Server) requireBalance(c businessContext) bool {
 	if s.balance != nil {
 		return true
 	}
@@ -279,7 +363,7 @@ func optionalTime(raw string) (*time.Time, error) {
 	return &parsed, err
 }
 
-func writeBalanceError(c *gin.Context, err error) {
+func writeBalanceError(c businessContext, err error) {
 	status := http.StatusBadRequest
 	if errors.Is(err, balance.ErrDeviceNotFound) {
 		status = http.StatusNotFound
@@ -289,7 +373,7 @@ func writeBalanceError(c *gin.Context, err error) {
 	c.JSON(status, gin.H{"status": "error", "message": err.Error()})
 }
 
-func writeManualBalanceError(c *gin.Context, err error, fallback string) {
+func writeManualBalanceError(c businessContext, err error, fallback string) {
 	status := http.StatusInternalServerError
 	message := fallback
 	switch {

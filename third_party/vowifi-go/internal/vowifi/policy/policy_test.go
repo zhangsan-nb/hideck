@@ -143,14 +143,39 @@ func TestResolveEmbeddedCarrierPresets(t *testing.T) {
 	}
 	if spark := ResolveEffectiveCarrierConfig("530", "05"); spark.PresetID != "spark_nz_53005" ||
 		!spark.WithholdDeviceIdentity || !CarrierPlanFromEffectiveConfig(spark).Device.Withhold ||
-		!spark.KeepChildSAOnRekeyDecline || !CarrierPlanFromEffectiveConfig(spark).IKE.KeepChildSAOnRekeyDecline {
+		!spark.KeepChildSAOnRekeyDecline || !CarrierPlanFromEffectiveConfig(spark).IKE.KeepChildSAOnRekeyDecline ||
+		!spark.DeferPeerChildRekeySwitch || !CarrierPlanFromEffectiveConfig(spark).IKE.DeferPeerChildRekeySwitch {
 		t.Fatalf("spark nz = %+v", spark)
+	}
+	if one := ResolveEffectiveCarrierConfig("530", "01"); one.PresetID != "one_nz_53001" ||
+		!one.WithholdDeviceIdentity || !CarrierPlanFromEffectiveConfig(one).Device.Withhold {
+		t.Fatalf("one nz = %+v", one)
+	}
+	if twoDegrees := ResolveEffectiveCarrierConfig("530", "24"); twoDegrees.PresetID != "2degrees_nz_53024" ||
+		!twoDegrees.IMSRegisterTemplate.AcceptRegisterContactWithoutUser || twoDegrees.IMSRegisterTemplate.RPReportOverPortUS ||
+		!CarrierPlanFromEffectiveConfig(twoDegrees).IMS.RegisterTemplate.AcceptRegisterContactWithoutUser {
+		t.Fatalf("2degrees nz = %+v", twoDegrees.IMSRegisterTemplate)
+	}
+	if spark := ResolveEffectiveCarrierConfig("530", "05"); spark.IMSRegisterTemplate.AcceptRegisterContactWithoutUser {
+		t.Fatal("spark nz accepts a Contact without the user part")
+	}
+	for _, plmn := range [][2]string{{"234", "15"}, {"515", "02"}, {"530", "01"}, {"530", "05"}, {"234", "87"}} {
+		cfg := ResolveEffectiveCarrierConfig(plmn[0], plmn[1])
+		want := cfg.PresetID == "vodafone_uk_23415"
+		if cfg.IMSRegisterTemplate.RPReportOverPortUS != want {
+			t.Fatalf("%s rp_report_over_port_us = %t, want %t", cfg.PresetID, cfg.IMSRegisterTemplate.RPReportOverPortUS, want)
+		}
+	}
+	if globe := ResolveEffectiveCarrierConfig("515", "02"); globe.PresetID != "globe_ph_51502" ||
+		globe.EPDGAddr != "weconnect.globe.com.ph" || globe.EPDGAddrSource != "preset" ||
+		globe.IMSTransport != "tcp" || CarrierPlanFromEffectiveConfig(globe).IMS.Transport != "tcp" {
+		t.Fatalf("globe ph = %+v", globe)
 	}
 	lebaraUK := ResolveEffectiveCarrierConfig("234", "87")
 	if lebaraUK.PresetID != "lebara_uk_23487" || lebaraUK.DeviceModel != "rmx3366" ||
 		lebaraUK.EPDGAddr != "epdg.epc.mnc087.mcc234.pub.3gppnetwork.org" ||
 		lebaraUK.EPDGAddrSource != "standard" || lebaraUK.IKERekeyIntervalSeconds != 9000 ||
-		lebaraUK.WithholdDeviceIdentity || lebaraUK.KeepChildSAOnRekeyDecline ||
+		!lebaraUK.WithholdDeviceIdentity || lebaraUK.KeepChildSAOnRekeyDecline || lebaraUK.DeferPeerChildRekeySwitch ||
 		lebaraUK.IMSRegisterTemplate.ID != "lebara_uk_23487" {
 		t.Fatalf("lebara uk = %+v", lebaraUK)
 	}
@@ -211,7 +236,6 @@ func TestResolveEmbeddedCarrierPresets(t *testing.T) {
 		{"248", "02", "elisa_ee_24802", "epdg.epc.mnc002.mcc248.pub.3gppnetwork.org"},
 		{"204", "08", "kpn_nl_20408", "epdg.epc.mnc008.mcc204.pub.3gppnetwork.org"},
 		{"502", "12", "hotlink_my_50212", "epdg.epc.mnc012.mcc502.pub.3gppnetwork.org"},
-		{"515", "02", "globe_ph_51502", "epdg.epc.mnc002.mcc515.pub.3gppnetwork.org"},
 		{"515", "03", "smart_ph_51503", "epdg.epc.mnc003.mcc515.pub.3gppnetwork.org"},
 		{"520", "01", "ais_th_52001", "epdg.epc.mnc001.mcc520.pub.3gppnetwork.org"},
 		{"520", "03", "ais_th_52003", "epdg.epc.mnc003.mcc520.pub.3gppnetwork.org"},

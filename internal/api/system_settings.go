@@ -20,7 +20,9 @@ func (s *Server) handleGetSystemSettings(c *gin.Context) {
 	if s.pool != nil {
 		enabled = s.pool.OpenWRTDynamicInterfacesEnabled()
 	} else if s.fullCfg != nil {
+		s.systemConfigMu.RLock()
 		enabled = s.fullCfg.System.OpenWRTDynamicInterfaces
+		s.systemConfigMu.RUnlock()
 	}
 	c.JSON(http.StatusOK, systemSettingsPayload{OpenWRTDynamicInterfaces: enabled})
 }
@@ -41,7 +43,13 @@ func (s *Server) handleUpdateSystemSettings(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"status": "error", "message": err.Error()})
 		return
 	}
-	system := config.SystemConfig{OpenWRTDynamicInterfaces: request.OpenWRTDynamicInterfaces}
+	system := config.SystemConfig{}
+	if s.fullCfg != nil {
+		s.systemConfigMu.RLock()
+		system = s.fullCfg.System
+		s.systemConfigMu.RUnlock()
+	}
+	system.OpenWRTDynamicInterfaces = request.OpenWRTDynamicInterfaces
 	if err := config.UpdateSystemInFile(s.configPath, system); err != nil {
 		rollbackErr := rollbackOpenWRTSetting(s, previous)
 		logger.Error("写入 OpenWrt 动态接口映射配置失败", "err", err, "rollback_err", rollbackErr)
@@ -53,7 +61,9 @@ func (s *Server) handleUpdateSystemSettings(c *gin.Context) {
 		return
 	}
 	if s.fullCfg != nil {
+		s.systemConfigMu.Lock()
 		s.fullCfg.System = system
+		s.systemConfigMu.Unlock()
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "applied": true})
 }

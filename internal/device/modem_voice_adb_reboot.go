@@ -114,7 +114,7 @@ func (port *modemVoicePort) scheduleADBRebootRecovery(confirmed bool) {
 
 func (p *Pool) adbRecoveryReplaced(opts modemRebootRecoveryOptions) bool {
 	current := p.GetWorker(opts.deviceID)
-	return opts.initialWorker != nil && current != nil && current != opts.initialWorker
+	return opts.initialWorker != nil && current != opts.initialWorker
 }
 
 // An asynchronous reset must not evict a worker installed by hotplug meanwhile.

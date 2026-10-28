@@ -38,6 +38,10 @@ type phoneRefreshRequest struct {
 	Takeover bool   `json:"takeover"`
 }
 
+type phoneHistoryDeleteRequest struct {
+	IDs []uint64 `json:"ids"`
+}
+
 func (s *Server) registerPhoneRoutes(api *gin.RouterGroup) {
 	api.GET("/phone/devices", s.handlePhoneDevices)
 	api.POST("/phone/media", s.handlePhoneMedia)
@@ -54,11 +58,16 @@ func (s *Server) registerPhoneRoutes(api *gin.RouterGroup) {
 	api.PUT("/phone/calls/:call_id/media", s.handlePhoneRefreshMedia)
 	api.GET("/phone/events", s.handlePhoneEvents)
 	api.GET("/phone/history", s.handlePhoneHistory)
+	api.POST("/phone/history/delete", s.handlePhoneHistoryDelete)
 	api.GET("/phone/recordings/:recording", s.handleCommandRecording)
 	s.registerPhoneContactRoutes(api)
 }
 
 func (s *Server) handlePhoneDevices(c *gin.Context) {
+	s.usePhoneDevices(c)
+}
+
+func (s *Server) usePhoneDevices(c businessContext) {
 	if !s.requirePhone(c) {
 		return
 	}
@@ -129,7 +138,7 @@ func (s *Server) handlePhoneMedia(c *gin.Context) {
 	if !decodePhoneJSON(c, &request) {
 		return
 	}
-	answer, err := s.phone.CreateMedia(c.Request.Context(), s.auth.Username, request.SDP)
+	answer, err := s.phone.CreateMedia(c.Request.Context(), s.authSnapshot().Username, request.SDP, c.Request.Host)
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -141,7 +150,7 @@ func (s *Server) handlePhoneMediaCancel(c *gin.Context) {
 	if !s.requirePhone(c) {
 		return
 	}
-	if err := s.phone.CancelMedia(s.auth.Username, c.Param("media_id"), phoneLease(c)); err != nil {
+	if err := s.phone.CancelMedia(s.authSnapshot().Username, c.Param("media_id"), phoneLease(c)); err != nil {
 		s.respondPhoneError(c, err)
 		return
 	}
@@ -149,6 +158,16 @@ func (s *Server) handlePhoneMediaCancel(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneStartCall(c *gin.Context) {
+	s.usePhoneStartCall(c)
+}
+
+func (s *Server) usePhoneStartCall(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
@@ -157,13 +176,13 @@ func (s *Server) handlePhoneStartCall(c *gin.Context) {
 		return
 	}
 	if s.pool != nil {
-		if err := s.pool.PrepareCellularCall(c.Request.Context(), request.DeviceID); err != nil {
+		if err := s.pool.PrepareCellularCall(businessRequestContext(c), request.DeviceID); err != nil {
 			s.respondPhoneError(c, err)
 			return
 		}
 	}
 	call, err := s.phone.StartCall(phone.StartCallRequest{
-		Owner: s.auth.Username, DeviceID: request.DeviceID, Callee: request.Callee,
+		Owner: s.authSnapshot().Username, DeviceID: request.DeviceID, Callee: request.Callee,
 		MediaID: request.MediaID, Lease: phoneLease(c),
 	})
 	if err != nil {
@@ -174,6 +193,10 @@ func (s *Server) handlePhoneStartCall(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneActiveCalls(c *gin.Context) {
+	s.usePhoneActiveCalls(c)
+}
+
+func (s *Server) usePhoneActiveCalls(c businessContext) {
 	if !s.requirePhone(c) {
 		return
 	}
@@ -181,6 +204,16 @@ func (s *Server) handlePhoneActiveCalls(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneAnswer(c *gin.Context) {
+	s.usePhoneAnswer(c)
+}
+
+func (s *Server) usePhoneAnswer(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
@@ -188,7 +221,7 @@ func (s *Server) handlePhoneAnswer(c *gin.Context) {
 	if !ok {
 		return
 	}
-	call, err := s.phone.Answer(c.Request.Context(), request)
+	call, err := s.phone.Answer(businessRequestContext(c), request)
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -197,6 +230,16 @@ func (s *Server) handlePhoneAnswer(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneReject(c *gin.Context) {
+	s.usePhoneReject(c)
+}
+
+func (s *Server) usePhoneReject(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
@@ -212,6 +255,16 @@ func (s *Server) handlePhoneReject(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneDTMF(c *gin.Context) {
+	s.usePhoneDTMF(c)
+}
+
+func (s *Server) usePhoneDTMF(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
@@ -219,7 +272,7 @@ func (s *Server) handlePhoneDTMF(c *gin.Context) {
 	if !decodePhoneJSON(c, &request) {
 		return
 	}
-	err := s.phone.DTMF(s.auth.Username, c.Param("call_id"), phoneLease(c), request.Digit)
+	err := s.phone.DTMF(s.authSnapshot().Username, c.Param("call_id"), phoneLease(c), request.Digit)
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -228,10 +281,20 @@ func (s *Server) handlePhoneDTMF(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneHold(c *gin.Context) {
+	s.usePhoneHold(c)
+}
+
+func (s *Server) usePhoneHold(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
-	err := s.phone.Hold(c.Request.Context(), s.auth.Username, c.Param("call_id"), phoneLease(c))
+	err := s.phone.Hold(businessRequestContext(c), s.authSnapshot().Username, c.Param("call_id"), phoneLease(c))
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -240,10 +303,20 @@ func (s *Server) handlePhoneHold(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneResume(c *gin.Context) {
+	s.usePhoneResume(c)
+}
+
+func (s *Server) usePhoneResume(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
-	err := s.phone.Resume(c.Request.Context(), s.auth.Username, c.Param("call_id"), phoneLease(c))
+	err := s.phone.Resume(businessRequestContext(c), s.authSnapshot().Username, c.Param("call_id"), phoneLease(c))
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -252,10 +325,20 @@ func (s *Server) handlePhoneResume(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneSwitch(c *gin.Context) {
+	s.usePhoneSwitch(c)
+}
+
+func (s *Server) usePhoneSwitch(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
-	err := s.phone.Switch(s.auth.Username, c.Param("call_id"), phoneLease(c))
+	err := s.phone.Switch(s.authSnapshot().Username, c.Param("call_id"), phoneLease(c))
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -264,10 +347,20 @@ func (s *Server) handlePhoneSwitch(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneHangup(c *gin.Context) {
+	s.usePhoneHangup(c)
+}
+
+func (s *Server) usePhoneHangup(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requirePhone(c) {
 		return
 	}
-	err := s.phone.Hangup(c.Request.Context(), s.auth.Username, c.Param("call_id"), phoneLease(c))
+	err := s.phone.Hangup(businessRequestContext(c), s.authSnapshot().Username, c.Param("call_id"), phoneLease(c))
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -284,7 +377,7 @@ func (s *Server) handlePhoneRefreshMedia(c *gin.Context) {
 		return
 	}
 	call, lease, err := s.phone.RefreshMedia(phone.RefreshRequest{
-		Owner: s.auth.Username, CallID: c.Param("call_id"), MediaID: request.MediaID,
+		Owner: s.authSnapshot().Username, CallID: c.Param("call_id"), MediaID: request.MediaID,
 		Lease: phoneLease(c), Takeover: request.Takeover,
 	})
 	if err != nil {
@@ -295,11 +388,15 @@ func (s *Server) handlePhoneRefreshMedia(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneHistory(c *gin.Context) {
+	s.usePhoneHistory(c)
+}
+
+func (s *Server) usePhoneHistory(c businessContext) {
 	if !s.requirePhone(c) {
 		return
 	}
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	records, err := s.phone.History(c.Request.Context(), limit)
+	records, err := s.phone.History(businessRequestContext(c), limit)
 	if err != nil {
 		s.respondPhoneError(c, err)
 		return
@@ -307,18 +404,44 @@ func (s *Server) handlePhoneHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"records": records})
 }
 
-func (s *Server) decodePhoneControl(c *gin.Context) (phone.ControlRequest, bool) {
+func (s *Server) handlePhoneHistoryDelete(c *gin.Context) {
+	s.usePhoneHistoryDelete(c)
+}
+
+func (s *Server) usePhoneHistoryDelete(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
+	if !s.requirePhone(c) {
+		return
+	}
+	var request phoneHistoryDeleteRequest
+	if !decodePhoneJSON(c, &request) {
+		return
+	}
+	deleted, err := s.phone.DeleteHistory(businessRequestContext(c), request.IDs)
+	if err != nil {
+		s.respondPhoneError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
+
+func (s *Server) decodePhoneControl(c businessContext) (phone.ControlRequest, bool) {
 	var request phoneControlRequest
 	if !decodePhoneJSON(c, &request) {
 		return phone.ControlRequest{}, false
 	}
 	return phone.ControlRequest{
-		Owner: s.auth.Username, CallID: c.Param("call_id"), MediaID: request.MediaID, Lease: phoneLease(c),
+		Owner: s.authSnapshot().Username, CallID: c.Param("call_id"), MediaID: request.MediaID, Lease: phoneLease(c),
 	}, true
 }
 
-func decodePhoneJSON(c *gin.Context, target interface{}) bool {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPhoneRequestBytes)
+func decodePhoneJSON(c businessContext, target interface{}) bool {
+	limitBusinessJSON(c, maxPhoneRequestBytes)
 	if err := c.ShouldBindJSON(target); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "phone_invalid_request", "message": err.Error()})
 		return false
@@ -326,7 +449,7 @@ func decodePhoneJSON(c *gin.Context, target interface{}) bool {
 	return true
 }
 
-func (s *Server) requirePhone(c *gin.Context) bool {
+func (s *Server) requirePhone(c businessContext) bool {
 	if s.phone != nil {
 		return true
 	}
@@ -334,7 +457,7 @@ func (s *Server) requirePhone(c *gin.Context) bool {
 	return false
 }
 
-func (s *Server) respondPhoneError(c *gin.Context, err error) {
+func (s *Server) respondPhoneError(c businessContext, err error) {
 	if respondOutboundLimit(c, err) {
 		return
 	}
@@ -342,6 +465,10 @@ func (s *Server) respondPhoneError(c *gin.Context, err error) {
 	status := http.StatusBadRequest
 	code := "phone_error"
 	switch {
+	case errors.Is(err, phone.ErrActiveCallHistoryDelete):
+		status = http.StatusConflict
+		code = "phone_history_active"
+		message = phone.ErrActiveCallHistoryDelete.Error()
 	case errors.Is(err, phone.ErrHoldUnavailable):
 		status = http.StatusServiceUnavailable
 		code = "phone_hold_unavailable"
@@ -358,6 +485,6 @@ func (s *Server) respondPhoneError(c *gin.Context, err error) {
 	c.JSON(status, gin.H{"status": "error", "code": code, "message": message})
 }
 
-func phoneLease(c *gin.Context) string {
+func phoneLease(c businessContext) string {
 	return strings.TrimSpace(c.GetHeader("X-Phone-Lease"))
 }

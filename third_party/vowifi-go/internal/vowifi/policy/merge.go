@@ -33,6 +33,9 @@ func GetGlobalDefaultConfig(mcc, mnc string) EffectiveCarrierConfig {
 		IMSRealm: DefaultCarrierIMSDomain(mcc, mnc), IMSTransport: "auto", IMSIdentitySource: "derived",
 		IMSLocalPort: 5060, IMSTCPKeepaliveSeconds: 30, IMSOptionsPingIntervalSeconds: 45,
 		IMSRegisterTemplate: template, IMSRegisterPolicySource: "default",
+		// Send DEVICE_IDENTITY only when the ePDG asks for it, as Android does.
+		// Some ePDGs reject a first IKE_AUTH that volunteers it.
+		WithholdDeviceIdentity: true,
 	}
 	syncCompatibilityProjection(&config)
 	return config
@@ -92,9 +95,7 @@ func mergePresetIKE(config *EffectiveCarrierConfig, preset CarrierPreset) {
 		config.DPDIntervalSeconds = clampIR51DPDInterval(*preset.DPDIntervalSeconds)
 	}
 	applyBoolPtr(&config.DeviceIdentityEnabled, preset.DeviceIdentityEnabled)
-	if preset.WithholdDeviceIdentity {
-		config.WithholdDeviceIdentity = true
-	}
+	applyBoolPtr(&config.WithholdDeviceIdentity, preset.WithholdDeviceIdentity)
 	applyBoolPtr(&config.EnableLegacyCiphers, preset.EnableLegacyCiphers)
 	if len(preset.AllowedLegacyCiphers) > 0 {
 		config.AllowedLegacyCiphers = normalizeStringList(preset.AllowedLegacyCiphers)
@@ -119,6 +120,9 @@ func mergePresetIKE(config *EffectiveCarrierConfig, preset CarrierPreset) {
 	}
 	if preset.KeepChildSAOnRekeyDecline {
 		config.KeepChildSAOnRekeyDecline = true
+	}
+	if preset.DeferPeerChildRekeySwitch {
+		config.DeferPeerChildRekeySwitch = true
 	}
 }
 

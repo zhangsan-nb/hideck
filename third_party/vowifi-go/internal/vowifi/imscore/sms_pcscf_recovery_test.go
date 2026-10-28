@@ -270,6 +270,8 @@ func TestVodafoneUKMTReportNon488DoesNotChangePCSCFPath(t *testing.T) {
 func TestMTReport488DoesNotTearDownAChangedPCSCFPath(t *testing.T) {
 	service, _, _ := newInboundSMSTestService(t)
 	service.cfg.CarrierPresetID = vodafoneUKCarrierPresetID
+	// Only a report sent over the P-CSCF's own connection can carry a stale path.
+	service.cfg.IMSRegisterTemplate.RPReportOverPortUS = true
 	service.mu.Lock()
 	service.registrar = "pcscf-a.example:5060"
 	service.registrarCandidates = []string{"pcscf-a.example:5060", "pcscf-b.example:5060"}

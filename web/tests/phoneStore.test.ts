@@ -29,6 +29,31 @@ function event(id: number, value: PhoneCall): PhoneEvent {
   return { id, type: 'call_connected', call: value, time: '2026-08-13T12:00:00Z' }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+async function withRefreshServices(
+  active: () => Promise<PhoneCall[]>,
+  run: () => Promise<void>
+) {
+  const originalDevices = phoneService.devices
+  const originalActive = phoneService.active
+  const originalHistory = phoneService.history
+  phoneService.devices = async () => []
+  phoneService.active = active
+  phoneService.history = async () => []
+  try {
+    await run()
+  } finally {
+    phoneService.devices = originalDevices
+    phoneService.active = originalActive
+    phoneService.history = originalHistory
+  }
+}
+
 test('normalizes broadcast ownership against the tab media session', () => {
   assert.equal(normalizeCallOwnership(call('other'), 'ours').read_only, true)
   assert.equal(normalizeCallOwnership(call('ours', { read_only: true }), 'ours').read_only, false)
@@ -96,6 +121,68 @@ test('applies call_ended after the event stream restarts with lower ids', () => 
   assert.equal(store.calls.length, 0)
   assert.equal(store.lastEventId, 1)
   assert.equal(store.isCallEnding('call-1'), false)
+})
+
+test('does not let an in-flight active snapshot overwrite a newer SSE state', async () => {
+  const pending = deferred<PhoneCall[]>()
+  await withRefreshServices(() => pending.promise, async () => {
+    setActivePinia(createPinia())
+    const store = usePhoneStore()
+    store.calls = [call('media-1', { status: 'ringing' })]
+    const refresh = store.refresh()
+    store.handleEvent(event(1, call('media-1', { status: 'connected' })))
+    pending.resolve([call('media-1', { status: 'ringing' })])
+    await refresh
+    assert.equal(store.calls[0]?.status, 'connected')
+  })
+})
+
+test('applies an active snapshot when no local call mutation happened', async () => {
+  await withRefreshServices(async () => [], async () => {
+    setActivePinia(createPinia())
+    const store = usePhoneStore()
+    store.calls = [call('media-1')]
+    await store.refresh()
+    assert.equal(store.calls.length, 0)
+  })
+})
+
+test('does not resurrect a call ended while an active snapshot was in flight', async () => {
+  const pending = deferred<PhoneCall[]>()
+  await withRefreshServices(() => pending.promise, async () => {
+    setActivePinia(createPinia())
+    const store = usePhoneStore()
+    store.calls = [call('media-1', { status: 'connected' })]
+    const refresh = store.refresh()
+    store.handleEvent({
+      id: 1,
+      type: 'call_ended',
+      call: call('media-1', { status: 'completed' }),
+      time: '2026-08-13T12:01:00Z'
+    })
+    pending.resolve([call('media-1', { status: 'connected' })])
+    await refresh
+    assert.equal(store.calls.length, 0)
+  })
+})
+
+test('does not resurrect an ended call that was never present in this tab', async () => {
+  const pending = deferred<PhoneCall[]>()
+  await withRefreshServices(() => pending.promise, async () => {
+    setActivePinia(createPinia())
+    const store = usePhoneStore()
+    const unseen = call('other-tab', { call_id: 'unseen-call', status: 'ringing', read_only: true })
+    const refresh = store.refresh()
+    store.handleEvent({
+      id: 1,
+      type: 'call_ended',
+      call: { ...unseen, status: 'completed' },
+      time: '2026-08-13T12:01:00Z'
+    })
+    pending.resolve([unseen])
+    await refresh
+    assert.equal(store.calls.length, 0)
+  })
 })
 
 test('toggleHold keeps mute local and only talks to IMS hold APIs', async () => {
@@ -299,6 +386,34 @@ test('labels pending and ended calls from their real lifecycle data', () => {
   assert.equal(phoneRecordStatusLabel(record('local_hangup')), '已挂断')
   assert.equal(phoneRecordStatusLabel(record('remote_bye')), '对方已挂断')
   assert.equal(phoneRecordStatusLabel(record()), '已结束')
+})
+
+test('history deletion mutates local state only after the server succeeds', async () => {
+  const originalDelete = phoneService.deleteHistory
+  const records: PhoneRecord[] = [1, 2].map((id) => ({
+    id,
+    call_id: `call-${id}`,
+    device_id: 'wwan1',
+    direction: 'outbound',
+    peer: '888',
+    status: 'completed',
+    started_at: '2026-08-13T12:00:00Z',
+    duration_seconds: 10
+  }))
+  try {
+    setActivePinia(createPinia())
+    const store = usePhoneStore()
+    store.history = records
+    phoneService.deleteHistory = async () => { throw new Error('database unavailable') }
+    await assert.rejects(store.deleteHistory([1]), /database unavailable/)
+    assert.deepEqual(store.history.map((record) => record.id), [1, 2])
+
+    phoneService.deleteHistory = async () => 1
+    assert.equal(await store.deleteHistory([1, 1, 0]), 1)
+    assert.deepEqual(store.history.map((record) => record.id), [2])
+  } finally {
+    phoneService.deleteHistory = originalDelete
+  }
 })
 
 test('keeps a waiting second call in the active list', () => {

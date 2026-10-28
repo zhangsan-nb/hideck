@@ -70,6 +70,8 @@ type IMSRegisterTemplate struct {
 	SecurityClientIncludesServerParams  bool
 	SecurityClientMechanisms            []IPSec3GPPSecurityMechanism
 	StrictSecurityServerOffer           bool
+	AcceptRegisterContactWithoutUser    bool
+	RPReportOverPortUS                  bool
 	EnableInitialRejectFallback         bool
 	FallbackIncludesServerParamsInSecCl bool
 	RegisterPolicy                      IMSRegisterPolicy
@@ -106,6 +108,8 @@ type IMSRegisterTemplateOverride struct {
 	SecurityClientIncludesServerParams  *bool                        `yaml:"security_client_includes_server_params"`
 	SecurityClientMechanisms            []IPSec3GPPSecurityMechanism `yaml:"security_client_mechanisms"`
 	StrictSecurityServerOffer           *bool                        `yaml:"strict_security_server_offer"`
+	AcceptRegisterContactWithoutUser    *bool                        `yaml:"accept_register_contact_without_user"`
+	RPReportOverPortUS                  *bool                        `yaml:"rp_report_over_port_us"`
 	EnableInitialRejectFallback         *bool                        `yaml:"enable_initial_reject_fallback"`
 	FallbackIncludesServerParamsInSecCl *bool                        `yaml:"fallback_includes_server_params_in_sec_client"`
 	RegisterPolicy                      IMSRegisterPolicyOverride    `yaml:"register_policy"`
@@ -147,6 +151,7 @@ type CarrierOverride struct {
 	ReauthIntervalSeconds         int                         `yaml:"reauth_interval_seconds"`
 	IKERekeyIntervalSeconds       int                         `yaml:"ike_rekey_interval_seconds"`
 	KeepChildSAOnRekeyDecline     *bool                       `yaml:"keep_child_sa_on_rekey_decline"`
+	DeferPeerChildRekeySwitch     *bool                       `yaml:"defer_peer_child_rekey_switch"`
 	IMSRegisterTemplate           IMSRegisterTemplateOverride `yaml:"ims_register_template"`
 	SMSRoutingMethod              string                      `yaml:"sms_routing_method"`
 	SMSRoutingGW                  string                      `yaml:"sms_routing_gw"`
@@ -173,7 +178,7 @@ type CarrierPreset struct {
 	IKEIdentityMode, AKAIdentityMode string
 	DeviceIdentityIMEI               string
 	DeviceIdentityEnabled            *bool
-	WithholdDeviceIdentity           bool
+	WithholdDeviceIdentity           *bool
 	NATKeepaliveSeconds              *int
 	DPDIntervalSeconds               *int
 	EnableLegacyCiphers              *bool
@@ -190,6 +195,7 @@ type CarrierPreset struct {
 	ReauthIntervalSeconds            int
 	IKERekeyIntervalSeconds          int
 	KeepChildSAOnRekeyDecline        bool
+	DeferPeerChildRekeySwitch        bool
 	IMSRegisterTemplate              IMSRegisterTemplate
 	IPStackType                      string `json:"ip_stack,omitempty" yaml:"ip_stack,omitempty"`
 	SMSRoutingMethod, SMSRoutingGW   string
@@ -224,6 +230,7 @@ type EffectiveCarrierConfig struct {
 	DPDKeepaliveIntervalSeconds, ReauthIntervalSeconds int
 	IKERekeyIntervalSeconds                            int
 	KeepChildSAOnRekeyDecline                          bool
+	DeferPeerChildRekeySwitch                          bool
 	IMSRegisterTemplate                                IMSRegisterTemplate
 	IMSRegisterPolicySource                            string
 	SMSRoutingMethod, SMSRoutingGW                     string
@@ -269,6 +276,7 @@ type IKEPlan struct {
 	DPDKeepaliveIntervalSeconds, ReauthIntervalSeconds int
 	IKERekeyIntervalSeconds                            int
 	KeepChildSAOnRekeyDecline                          bool
+	DeferPeerChildRekeySwitch                          bool
 	AKAPrimePreferred                                  bool
 }
 type IMSPlan struct {

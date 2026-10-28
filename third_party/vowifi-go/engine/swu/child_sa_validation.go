@@ -14,6 +14,7 @@ type childSAOffer struct {
 	encryptionKeyBits          uint16
 	integrity                  uint16
 	dhGroup                    uint16
+	dhNoneOffered              bool // NONE was offered beside dhGroup
 	esn                        bool
 	tsi                        *ikev2.EncryptedPayloadTS
 	tsr                        *ikev2.EncryptedPayloadTS

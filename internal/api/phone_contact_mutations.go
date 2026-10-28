@@ -21,6 +21,16 @@ type phoneContactGroupRequest struct {
 }
 
 func (s *Server) handlePhoneContactsBatch(c *gin.Context) {
+	s.usePhoneContactsBatch(c)
+}
+
+func (s *Server) usePhoneContactsBatch(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req phoneContactBatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_json", "message": "请求格式不正确"})
@@ -36,7 +46,7 @@ func (s *Server) handlePhoneContactsBatch(c *gin.Context) {
 		saveAtomicPhoneContactBatch(c, inputs, region)
 		return
 	}
-	imported, skipped, err := db.UpsertPhoneContactsWithRegion(c.Request.Context(), inputs, region)
+	imported, skipped, err := db.UpsertPhoneContactsWithRegion(businessRequestContext(c), inputs, region)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error", "code": "contact_batch_failed", "message": "批量保存失败",
@@ -46,7 +56,7 @@ func (s *Server) handlePhoneContactsBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"imported": imported, "skipped": skipped})
 }
 
-func writePhoneContactBatchSizeError(c *gin.Context, size int) {
+func writePhoneContactBatchSizeError(c businessContext, size int) {
 	if size == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "empty_batch", "message": "没有可添加的联系人"})
 		return
@@ -67,8 +77,8 @@ func phoneContactInputs(contacts []phoneContactRequest, region string) []db.Phon
 	return inputs
 }
 
-func saveAtomicPhoneContactBatch(c *gin.Context, inputs []db.PhoneContactInput, region string) {
-	rows, err := db.UpsertPhoneContactBatchWithRegion(c.Request.Context(), inputs, region)
+func saveAtomicPhoneContactBatch(c businessContext, inputs []db.PhoneContactInput, region string) {
+	rows, err := db.UpsertPhoneContactBatchWithRegion(businessRequestContext(c), inputs, region)
 	if err != nil {
 		c.JSON(phoneContactMutationStatus(err), gin.H{
 			"status": "error", "code": "contact_batch_failed", "message": "批量保存失败",
@@ -94,12 +104,22 @@ func phoneContactMutationStatus(err error) int {
 }
 
 func (s *Server) handlePhoneContactGroupUpdate(c *gin.Context) {
+	s.usePhoneContactGroupUpdate(c)
+}
+
+func (s *Server) usePhoneContactGroupUpdate(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req phoneContactGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_json", "message": "请求格式不正确"})
 		return
 	}
-	rows, err := db.UpdatePhoneContactGroupName(c.Request.Context(), req.ContactID, req.Name)
+	rows, err := db.UpdatePhoneContactGroupName(businessRequestContext(c), req.ContactID, req.Name)
 	if err != nil {
 		c.JSON(phoneContactMutationStatus(err), gin.H{
 			"status": "error", "code": "contact_group_update_failed", "message": "更新联系人失败",
@@ -110,7 +130,17 @@ func (s *Server) handlePhoneContactGroupUpdate(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneContactGroupDelete(c *gin.Context) {
-	numbers, err := db.DeletePhoneContactGroup(c.Request.Context(), c.Query("contact_id"))
+	s.usePhoneContactGroupDelete(c)
+}
+
+func (s *Server) usePhoneContactGroupDelete(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
+	numbers, err := db.DeletePhoneContactGroup(businessRequestContext(c), c.Query("contact_id"))
 	if err != nil {
 		c.JSON(phoneContactMutationStatus(err), gin.H{
 			"status": "error", "code": "contact_group_delete_failed", "message": "删除联系人失败",

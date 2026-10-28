@@ -51,7 +51,7 @@ func TestRegistrationExpiresMatchesCurrentBinding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := registrationExpires(response, own, 10*time.Minute)
+			got, err := registrationExpires(response, own, 10*time.Minute, false)
 			if (err != nil) != test.wantError || got != test.want {
 				t.Fatalf("registrationExpires = %s, %v; want %s, error=%t", got, err, test.want, test.wantError)
 			}
@@ -78,14 +78,43 @@ func TestRegisterContactURIMatching(t *testing.T) {
 		{"extra extension", own, "<sip:current@ims.example:5060;transport=tcp;extension=1>", true},
 		{"URI headers", own, "<sip:current@ims.example:5060;transport=tcp?subject=test>", false},
 		{"IPv6", "<sip:current@[2001:db8::1]:5060;transport=tcp>", "<sip:current@[2001:DB8::1]:5060;transport=tcp>", true},
+		// RFC 5954 4.1: Globe PH answers with the expanded upper-case form.
+		{"IPv6 expanded", "<sip:current@[2001:db8:1:2:3:0:4:5]:5060;transport=tcp>",
+			"<sip:current@[2001:0DB8:0001:0002:0003:0000:0004:0005]:5060;transport=tcp>", true},
+		{"IPv6 different address", "<sip:current@[2001:db8::1]:5060;transport=tcp>", "<sip:current@[2001:db8::2]:5060;transport=tcp>", false},
 		{"unbracketed", "sip:current@ims.example", "sip:current@ims.example", true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := &sipResponse{Headers: map[string]string{"Contact": test.response + ";expires=120"}}
-			got := matchingRegisterContact(response, test.request) != ""
+			got := matchingRegisterContact(response, test.request, false) != ""
 			if got != test.match {
 				t.Fatalf("matched = %t, want %t", got, test.match)
+			}
+		})
+	}
+}
+
+func TestRegisterContactWithoutUserNeedsPresetOptIn(t *testing.T) {
+	const own = "<sip:user1@10.137.119.140:23289;transport=tcp>"
+	tests := []struct {
+		name, response string
+		strict, optIn  bool
+	}{
+		{"userless echo", "<sip:10.137.119.140:23289;transport=tcp>", false, true},
+		{"userless other port", "<sip:10.137.119.140:23290;transport=tcp>", false, false},
+		{"userless other transport", "<sip:10.137.119.140:23289;transport=udp>", false, false},
+		{"other user", "<sip:user2@10.137.119.140:23289;transport=tcp>", false, false},
+		{"own user", own, true, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := &sipResponse{Headers: map[string]string{"Contact": test.response + ";expires=600"}}
+			if got := matchingRegisterContact(response, own, false) != ""; got != test.strict {
+				t.Fatalf("strict matched = %t, want %t", got, test.strict)
+			}
+			if got := matchingRegisterContact(response, own, true) != ""; got != test.optIn {
+				t.Fatalf("opt-in matched = %t, want %t", got, test.optIn)
 			}
 		})
 	}

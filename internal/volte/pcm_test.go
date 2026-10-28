@@ -3,6 +3,7 @@ package volte
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,7 +30,7 @@ func (m *memPCM) WriteFrame(frame []int16) error {
 	defer m.mu.Unlock()
 	cp := append([]int16(nil), frame...)
 	m.written = append(m.written, cp)
-	if len(m.written) > pcmJitterDepth {
+	if len(m.written) > pcmJitterMaxFrames {
 		return errorsNew("overflow")
 	}
 	return nil
@@ -45,6 +46,15 @@ func (m *memPCM) writtenCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.written)
+}
+
+func (m *memPCM) lastWritten() []int16 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.written) == 0 {
+		return nil
+	}
+	return append([]int16(nil), m.written[len(m.written)-1]...)
 }
 
 func (m *memPCM) isClosed() bool {
@@ -116,6 +126,59 @@ func TestPCMBridgeCloseReleases(t *testing.T) {
 	}
 }
 
+func TestPCMBridgeCloseWaitsForDownlinkReader(t *testing.T) {
+	conn := newDelayedClosePacketConn()
+	bridge := NewPCMBridge(conn, addr{"peer"}, &memPCM{}, false)
+	select {
+	case <-conn.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("downlink reader did not start")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		_ = bridge.Close()
+		close(closed)
+	}()
+	select {
+	case <-conn.closed:
+	case <-time.After(time.Second):
+		close(conn.releaseRead)
+		t.Fatal("bridge did not close the RTP connection")
+	}
+	select {
+	case <-closed:
+		close(conn.releaseRead)
+		t.Fatal("bridge closed before downlink reader exited")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(conn.releaseRead)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("bridge did not close after downlink reader exited")
+	}
+}
+
+func TestPCMBridgeConcealsMissingDownlinkWithSilence(t *testing.T) {
+	pcm := &memPCM{}
+	bridge := &PCMBridge{pcm: pcm}
+	bridge.playDownlink(nil, pcmPlayoutGap, &pcmWriteLogState{})
+
+	frame := pcm.lastWritten()
+	if len(frame) != pcmuFrameSamples {
+		t.Fatalf("concealment frame length=%d, want %d", len(frame), pcmuFrameSamples)
+	}
+	for index, sample := range frame {
+		if sample != 0 {
+			t.Fatalf("concealment sample %d=%d, want silence", index, sample)
+		}
+	}
+	if bridge.lost.Load() != 1 || bridge.toPCM.Load() != 0 {
+		t.Fatalf("lost=%d to_pcm=%d, want 1/0", bridge.lost.Load(), bridge.toPCM.Load())
+	}
+}
+
 func nonzeroFrame() []int16 {
 	out := make([]int16, pcmuFrameSamples)
 	for i := range out {
@@ -145,3 +208,50 @@ func (p *packetPipe) ReadFrom(b []byte) (int, net.Addr, error) {
 func (p *packetPipe) WriteTo(b []byte, _ net.Addr) (int, error) {
 	return p.Conn.Write(b)
 }
+
+type delayedClosePacketConn struct {
+	readStarted chan struct{}
+	closed      chan struct{}
+	releaseRead chan struct{}
+	started     atomic.Bool
+}
+
+func newDelayedClosePacketConn() *delayedClosePacketConn {
+	return &delayedClosePacketConn{
+		readStarted: make(chan struct{}),
+		closed:      make(chan struct{}),
+		releaseRead: make(chan struct{}),
+	}
+}
+
+func (c *delayedClosePacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	if c.started.CompareAndSwap(false, true) {
+		close(c.readStarted)
+	}
+	<-c.closed
+	<-c.releaseRead
+	return 0, nil, net.ErrClosed
+}
+
+func (c *delayedClosePacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
+	select {
+	case <-c.closed:
+		return 0, net.ErrClosed
+	default:
+		return len(payload), nil
+	}
+}
+
+func (c *delayedClosePacketConn) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+func (c *delayedClosePacketConn) LocalAddr() net.Addr              { return addr{"local"} }
+func (c *delayedClosePacketConn) SetDeadline(time.Time) error      { return nil }
+func (c *delayedClosePacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *delayedClosePacketConn) SetWriteDeadline(time.Time) error { return nil }

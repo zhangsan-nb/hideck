@@ -44,7 +44,10 @@ func TestOpenAPIHiDeckYAMLValid(t *testing.T) {
 		"/settings/notifications/qq/qr/start", "/settings/notifications/qq/qr/status",
 		"/settings/notifications/qq/qr/cancel", "/settings/notifications/feishu/qr/start",
 		"/settings/notifications/feishu/qr/status", "/settings/notifications/feishu/qr/cancel",
-		"/settings/disclaimer",
+		"/settings/phone", "/settings/phone/auto-answer/devices/{device_id}",
+		"/settings/phone/auto-answer/audio", "/settings/disclaimer",
+		"/settings/archive", "/settings/archive/test", "/archive/actions/run",
+		"/archive/cleanup/preview", "/archive/cleanup",
 	} {
 		if paths[path] == nil {
 			t.Fatalf("openapi.hideck.yaml missing %s", path)

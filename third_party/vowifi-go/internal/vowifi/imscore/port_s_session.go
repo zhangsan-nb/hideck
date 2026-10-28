@@ -37,6 +37,7 @@ type portSSessionState struct {
 	lastInboundAt   time.Time
 	lastCloseKind   string
 	lastCloseReason string
+	closedRegistrar string
 	peerResetCount  uint64
 	resetRecovery   portSResetRecoveryState
 	timeoutRecovery portSTimeoutRecoveryState
@@ -50,7 +51,11 @@ type portSSessionSnapshot struct {
 	lastInboundAt   time.Time
 	lastCloseKind   string
 	lastCloseReason string
+	closedRegistrar string
 	peerResetCount  uint64
+	// REGISTER after a timeout did not bring port-s back where the carrier
+	// requires it (Vodafone UK); the downlink is known to be broken.
+	timeoutValidationFailed bool
 }
 
 func (s *Service) recordPortSOpened(conn net.Conn, now time.Time) {
@@ -127,6 +132,7 @@ func (s *Service) recordPortSClosed(conn net.Conn, err error, now time.Time) boo
 		s.portSSession.closedAt = now
 		s.portSSession.lastCloseKind = kind
 		s.portSSession.lastCloseReason = errorText(err)
+		s.portSSession.closedRegistrar = registrar
 		s.recordPortSTimeoutLocked(registrar, kind)
 	}
 	startFailover := false
@@ -210,7 +216,9 @@ func (s *Service) capturePortSSession() portSSessionSnapshot {
 		connected: s.portSPushReady.Load(), generation: state.generation,
 		openedAt: state.openedAt, closedAt: state.closedAt,
 		lastInboundAt: state.lastInboundAt, lastCloseKind: state.lastCloseKind,
-		lastCloseReason: state.lastCloseReason, peerResetCount: state.peerResetCount,
+		lastCloseReason: state.lastCloseReason, closedRegistrar: state.closedRegistrar,
+		peerResetCount:          state.peerResetCount,
+		timeoutValidationFailed: state.timeoutRecovery.validationFailed,
 	}
 }
 

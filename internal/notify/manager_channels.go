@@ -242,6 +242,26 @@ func (m *Manager) UpdateConfig(cfg *config.Config) error {
 	return m.initChannels(cfg)
 }
 
+// UpdateDeviceFilters applies device-scoped delivery filters without
+// reconnecting notification channels.
+func (m *Manager) UpdateDeviceFilters(filters map[string][]string) {
+	if m == nil {
+		return
+	}
+	m.updateMu.Lock()
+	defer m.updateMu.Unlock()
+	m.channelsMu.Lock()
+	defer m.channelsMu.Unlock()
+
+	updated := make(map[Channel]map[string]bool)
+	for _, channel := range m.channels {
+		if devices := deviceSet(filters[channel.Name()]); devices != nil {
+			updated[channel] = devices
+		}
+	}
+	m.deviceFilters = updated
+}
+
 // RevokeChannel retires a channel immediately while leaving unrelated channels active.
 func (m *Manager) RevokeChannel(name string) bool {
 	if m == nil {

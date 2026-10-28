@@ -42,6 +42,7 @@ export type NativeVoLTEStatus = {
   ims_enabled?: boolean
   volte_enabled?: boolean
   ims_registered?: boolean
+  voice_indications_ready?: boolean
   voice_available?: boolean
   uac_enabled?: boolean
   audio_device?: string
@@ -438,6 +439,7 @@ export type CardPolicy = {
   phone_mode?: 'wifi' | 'cellular' | 'volte' | string
   data_strategy?: 'always' | 'on_demand' | string
   vowifi_upstream_proxy_id?: string
+  local_phone_override?: string
   source: 'auto' | 'user'
   updated_at?: string
 }

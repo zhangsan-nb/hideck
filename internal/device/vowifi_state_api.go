@@ -50,6 +50,7 @@ func (p *Pool) SendVoWiFiSMSWithOptions(ctx context.Context, deviceID, to, text 
 	}
 	return p.sendVoWiFiSMS(ctx, voWiFiSMSSendRequest{
 		DeviceID: deviceID, To: to, Text: text, Check: check,
+		Acquire: func() (func(), error) { return p.acquireOutboundOperation(worker) },
 		Options: messaging.SendOptions{Encoding: string(opts.Encoding)},
 	})
 }

@@ -29,7 +29,7 @@ type Adapter interface {
 	WorkerExists(deviceID string) bool
 	WaitQMICoreReady(deviceID string, timeout time.Duration) error
 	WaitWorkerReady(deviceID string, timeout time.Duration) error
-	PrepareStart(deviceID, traceID, runtimeEPDGOverride string) (PreparedStart, error)
+	PrepareStart(ctx context.Context, deviceID, traceID, runtimeEPDGOverride string) (PreparedStart, error)
 	BeforeStart(deviceID string, modem runtimehost.Modem, proxy *runtimehost.ProxyConfig) func(context.Context, runtimehost.SessionConfig) error
 	HandleStartupError(req StartupErrorRequest) error
 	MarkRuntimeStarted(req RuntimeStartedRequest)
@@ -61,7 +61,7 @@ func (m *Manager) ConfigureAdapter(adapter Adapter) {
 	m.adapter = adapter
 }
 
-func (m *Manager) PrepareStart(deviceID, traceID, runtimeEPDGOverride string) (PreparedStart, error) {
+func (m *Manager) PrepareStart(ctx context.Context, deviceID, traceID, runtimeEPDGOverride string) (PreparedStart, error) {
 	adapter := m.hostAdapter()
 	if adapter == nil {
 		return PreparedStart{}, fmt.Errorf("vowifi host adapter is not configured")
@@ -70,7 +70,7 @@ func (m *Manager) PrepareStart(deviceID, traceID, runtimeEPDGOverride string) (P
 	if deviceID == "" {
 		return PreparedStart{}, fmt.Errorf("vowifi prepare start device_id is empty")
 	}
-	return adapter.PrepareStart(deviceID, strings.TrimSpace(traceID), strings.TrimSpace(runtimeEPDGOverride))
+	return adapter.PrepareStart(ctx, deviceID, strings.TrimSpace(traceID), strings.TrimSpace(runtimeEPDGOverride))
 }
 
 func (m *Manager) BeforeStart(deviceID string, modem runtimehost.Modem, proxy *runtimehost.ProxyConfig) func(context.Context, runtimehost.SessionConfig) error {

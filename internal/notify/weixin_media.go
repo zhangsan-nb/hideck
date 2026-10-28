@@ -50,6 +50,24 @@ type weixinFileItemInput struct {
 	EncryptedParam string
 }
 
+func (w *WeixinChannel) SendNotificationWithAttachments(ctx NotificationContext, attachments []CommandAttachment) error {
+	state := w.snapshotState()
+	target := strings.TrimSpace(state.Weixin.DefaultTarget)
+	if target == "" {
+		return errors.New("个人微信尚未绑定默认通知目标")
+	}
+	var sendErrors []error
+	for _, attachment := range attachments {
+		if err := w.sendAttachment(context.Background(), target, attachment); err != nil {
+			sendErrors = append(sendErrors, err)
+		}
+	}
+	if err := w.sendTo(context.Background(), target, ctx.Text); err != nil {
+		sendErrors = append(sendErrors, err)
+	}
+	return errors.Join(sendErrors...)
+}
+
 func (w *WeixinChannel) sendAttachment(ctx context.Context, target string, attachment CommandAttachment) error {
 	path := strings.TrimSpace(attachment.Path)
 	if path == "" {

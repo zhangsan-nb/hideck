@@ -106,8 +106,8 @@ func (p *Pool) Context() context.Context {
 	return p.ctx
 }
 
-func (p *Pool) PrepareStart(deviceID, traceID, runtimeEPDGOverride string) (vowifihost.PreparedStart, error) {
-	startCtx, err := p.prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride)
+func (p *Pool) PrepareStart(ctx context.Context, deviceID, traceID, runtimeEPDGOverride string) (vowifihost.PreparedStart, error) {
+	startCtx, err := p.prepareVoWiFiStartContext(ctx, deviceID, traceID, runtimeEPDGOverride)
 	if err != nil {
 		return vowifihost.PreparedStart{}, err
 	}
@@ -144,7 +144,7 @@ func (p *Pool) MarkRuntimeStarted(req vowifihost.RuntimeStartedRequest) {
 	}
 }
 
-func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride string) (voWiFiStartContext, error) {
+func (p *Pool) prepareVoWiFiStartContext(ctx context.Context, deviceID, traceID, runtimeEPDGOverride string) (voWiFiStartContext, error) {
 	startCtx := voWiFiStartContext{startedAt: time.Now()}
 
 	w := p.GetWorker(deviceID)
@@ -169,7 +169,7 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 			p.enforceLebaraUKRadioOff(w, "cellular_start_blocked")
 			return startCtx, ErrLebaraUKRFLocked
 		}
-		return p.prepareCellularStartContext(startCtx, w, deviceID, traceID, runtimeEPDGOverride)
+		return p.prepareCellularStartContext(ctx, startCtx, w, deviceID, traceID, runtimeEPDGOverride)
 	}
 
 	if err := w.suppressCellularRegistration(p.Context(), "vowifi_start"); err != nil {
@@ -185,6 +185,10 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 		logger.Info("VoWiFi 使用 QMI 模式鉴权", "trace_id", traceID, "device", deviceID)
 	}
 
+	// A ready cache is not re-read here: buildVoWiFiStartProfile reads the live
+	// identity under the ownership lock and adopts a changed IMSI. An extra live
+	// read before that lock would let card policy projection take the lock first
+	// and wait for this start to drain, deadlocking both.
 	w.cacheMu.RLock()
 	identityReady := w.state.Identity.Ready
 	w.cacheMu.RUnlock()
@@ -207,8 +211,12 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 		"imsi", strings.TrimSpace(currentStatus.IMSI),
 		"imei", strings.TrimSpace(currentStatus.IMEI))
 
-	startProfile, errProfile := p.buildVoWiFiStartProfile(w, traceID)
+	startProfile, errProfile := p.buildVoWiFiStartProfile(ctx, w, traceID)
 	if errProfile != nil {
+		if errors.Is(errProfile, errVoWiFiStartSuperseded) || errors.Is(errProfile, ErrMultiIMSIDrift) {
+			// Both cancellation and drift already have a specific diagnostic.
+			return startCtx, errProfile
+		}
 		logger.Error("构建 VoWiFi 启动画像失败", "trace_id", traceID, "device", deviceID, "err", errProfile)
 		return startCtx, errProfile
 	}
@@ -257,7 +265,7 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 		logger.Warn("VoWiFi 启动被 Lebara UK 切卡拦截",
 			"trace_id", traceID,
 			"device", deviceID,
-			"imsi", class.LiveIMSI,
+			"imsi", maskIMSIPrefix(class.LiveIMSI),
 			"err", err)
 		logVoWiFiFailureSummary(traceID, deviceID, "startup", "policy", err.Error(), false, 0)
 		return startCtx, err
@@ -337,6 +345,7 @@ func (p *Pool) prepareVoWiFiStartContext(deviceID, traceID, runtimeEPDGOverride 
 // suppresses native IMS via QMI, and sets a TunnelFactory that binds the SWu
 // tunnel socket to the cellular interface via SO_BINDTODEVICE.
 func (p *Pool) prepareCellularStartContext(
+	ctx context.Context,
 	startCtx voWiFiStartContext,
 	w *Worker,
 	deviceID, traceID, runtimeEPDGOverride string,
@@ -398,8 +407,12 @@ func (p *Pool) prepareCellularStartContext(
 		p.PersistIdentityState(w)
 	}
 
-	startProfile, errProfile := p.buildVoWiFiStartProfile(w, traceID)
+	startProfile, errProfile := p.buildVoWiFiStartProfile(ctx, w, traceID)
 	if errProfile != nil {
+		if errors.Is(errProfile, errVoWiFiStartSuperseded) || errors.Is(errProfile, ErrMultiIMSIDrift) {
+			// Both cancellation and drift already have a specific diagnostic.
+			return startCtx, errProfile
+		}
 		logger.Error("蜂窝模式构建启动画像失败", "trace_id", traceID, "device", deviceID, "err", errProfile)
 		return startCtx, errProfile
 	}

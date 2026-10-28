@@ -27,7 +27,10 @@ func TestSIMICCIDMigrationRepairsDeviceSMSAndPolicies(t *testing.T) {
 		}
 	}
 	create(&Device{IMEI: imei, Alias: "wwan0", CurrentICCID: &legacy})
-	create(&SIMCard{ICCID: legacy, IMSI: imsi, CurrentIMEI: ptrString(imei), Operator: "中国移动", LastSeen: now})
+	create(&SIMCard{
+		ICCID: legacy, IMSI: imsi, CurrentIMEI: ptrString(imei), Operator: "中国移动",
+		RegStatusText: "registered", APN: "cmnet", LastSeen: now,
+	})
 	create(&SIMCard{ICCID: issue46ICCID, IMSI: imsi, LastSeen: now.Add(time.Second)})
 	create(&SIMSubscription{IMSI: imsi, CurrentICCID: legacy, PhoneNumber: "+8613800000000"})
 	first := SMS{ICCID: legacy, IMSI: imsi, Peer: peer, Type: 1, Status: 1, Content: "read", Timestamp: now}
@@ -74,6 +77,10 @@ func TestSIMICCIDMigrationRepairsDeviceSMSAndPolicies(t *testing.T) {
 		}
 		if sim.Operator != "中国移动" {
 			t.Fatalf("operator=%q", sim.Operator)
+		}
+		if sim.CurrentIMEI == nil || *sim.CurrentIMEI != imei ||
+			sim.RegStatusText != "registered" || sim.APN != "cmnet" {
+			t.Fatalf("merged SIM metadata=%+v", sim)
 		}
 	}
 	var usage OutboundUsage

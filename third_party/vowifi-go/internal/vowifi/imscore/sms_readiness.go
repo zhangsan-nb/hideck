@@ -1,6 +1,10 @@
 package imscore
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/iniwex5/vowifi-go/internal/vowifi/logging"
+)
 
 const (
 	smsReadyReasonReady             = "IMS SMS receiver ready"
@@ -11,6 +15,7 @@ const (
 	smsReadyReasonSMSCNotConfigured = "IMS SMSC is not configured"
 	smsReadyReasonAwaitingDownlink  = "IMS registered; SMS reception awaiting downlink verification"
 	smsReadyReasonRegistrationFlow  = "IMS SMS receiver verified on registered TCP flow"
+	smsReadyReasonPortSAwaitingPeer = "IMS registered; port-s closed or timed out, awaiting the P-CSCF reconnect"
 )
 
 type smsHealthInput struct {
@@ -59,7 +64,27 @@ func (s *Service) SMSReadiness() SMSReadiness {
 	if readiness.Ready && registrationSMSProven {
 		readiness.Reason = smsReadyReasonRegistrationFlow
 	}
+	if !readiness.Ready && readiness.SMSCPresent && !s.smsReception.reportFailed &&
+		strings.EqualFold(portS.closedRegistrar, strings.TrimSpace(s.registrar)) && portSAwaitingPeer(smsHealthInput{
+		readiness: readiness, baseReceiverReady: baseReceiverReady,
+		protectedPushRequired: protectedPushRequired, portS: portS,
+	}) {
+		readiness.Reason = smsReadyReasonPortSAwaitingPeer
+	}
 	return readiness
+}
+
+// portSAwaitingPeer reports a registration whose only missing piece is a
+// port-s the P-CSCF closed (EOF) or that timed out. TS 33.203 7.1 has the
+// P-CSCF reopen it before its next request, so this only changes the reason;
+// readiness and health stay as they are.
+func portSAwaitingPeer(input smsHealthInput) bool {
+	kind := input.portS.lastCloseKind
+	return input.readiness.Registered && input.readiness.ProfileReady &&
+		input.readiness.TransportReady && input.baseReceiverReady &&
+		input.protectedPushRequired && !input.portS.connected && input.portS.generation > 0 &&
+		(kind == portSCloseEOF || kind == portSCloseTimeout) &&
+		!input.portS.closedAt.Before(input.portS.openedAt) && !input.portS.timeoutValidationFailed
 }
 
 func smsReceiverHealthReady(input smsHealthInput) bool {
@@ -114,8 +139,13 @@ func (s *Service) setSMSReceiverReady(ready bool) {
 	if ready {
 		s.maybeNotifySMSReady(smsReadyReasonReady)
 	}
-	if changed && callback != nil {
-		callback(s.SMSReadiness())
+	if !changed {
+		return
+	}
+	readiness := s.SMSReadiness()
+	s.logSMSReadinessChange(readiness)
+	if callback != nil {
+		callback(readiness)
 	}
 }
 
@@ -127,9 +157,24 @@ func (s *Service) notifySMSReadiness() {
 	callback := s.onSMSReadiness
 	s.mu.RUnlock()
 	s.maybeNotifySMSReady(smsReadyReasonReady)
+	readiness := s.SMSReadiness()
+	s.logSMSReadinessChange(readiness)
 	if callback != nil {
-		callback(s.SMSReadiness())
+		callback(readiness)
 	}
+}
+
+// logSMSReadinessChange logs each new readiness reason. The UI shows SMS RX
+// state from these snapshots, and the not-ready transitions were otherwise
+// visible only there.
+func (s *Service) logSMSReadinessChange(readiness SMSReadiness) {
+	if previous, _ := s.smsReadinessReason.Swap(readiness.Reason).(string); previous == readiness.Reason {
+		return
+	}
+	logging.Info("IMS SMS readiness changed",
+		"device", s.DeviceID(), "reason", readiness.Reason,
+		"ready", readiness.Ready, "health_ready", readiness.HealthReady,
+		"receiver_pending", readiness.ReceiverPending, "port_s_connected", s.portSPushReady.Load())
 }
 
 func evaluateSMSReadiness(registered, profileReady, transportReady, receiverReady bool, smsc string) SMSReadiness {

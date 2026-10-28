@@ -1,12 +1,12 @@
 package swu
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
 	enginecrypto "github.com/iniwex5/vowifi-go/engine/crypto"
 	"github.com/iniwex5/vowifi-go/engine/ikev2"
+	"go.uber.org/zap"
 )
 
 const rekeyCooldown = 30 * time.Second
@@ -28,7 +28,7 @@ func (s *Session) RekeyIKESA() error {
 func (s *Session) RekeyChildSA() error {
 	s.rekeyMu.Lock()
 	defer s.rekeyMu.Unlock()
-	if s.childRekeyInCooldown() {
+	if s.childRekeyInCooldown() || s.deferLocalRekeyForPeerAnswer() {
 		return nil
 	}
 	err := s.performChildSARekey(s.ctx)
@@ -80,31 +80,53 @@ func (s *Session) handleCreateChildSAResp(
 	newSPI uint32,
 	newChildDH *enginecrypto.DiffieHellman,
 ) error {
+	_, err := s.handleCreateChildSARespOffer(data, initiatorNonce, newSPI, newChildDH, childRekeyDHOffer{})
+	return err
+}
+
+// handleCreateChildSARespOffer installs the answer to a CHILD_SA rekey offer
+// and returns the selected D-H group, 0 for none.
+func (s *Session) handleCreateChildSARespOffer(
+	data, initiatorNonce []byte,
+	newSPI uint32,
+	newChildDH *enginecrypto.DiffieHellman,
+	offer childRekeyDHOffer,
+) (uint16, error) {
 	packet, err := ikev2.DecodePacket(data)
 	if err != nil {
-		return fmt.Errorf("swu: decode CHILD_SA rekey response: %w", err)
+		newChildDH.Wipe()
+		return 0, fmt.Errorf("swu: decode CHILD_SA rekey response: %w", err)
 	}
 	payloads, err := s.decryptAndParse(packet)
 	if err != nil {
-		return fmt.Errorf("swu: decrypt CHILD_SA rekey response: %w", err)
+		newChildDH.Wipe()
+		return 0, fmt.Errorf("swu: decrypt CHILD_SA rekey response: %w", err)
 	}
 	if err := childSARejectionError(payloads); err != nil {
-		return err
+		newChildDH.Wipe()
+		return 0, err
 	}
 	s.childSAMu.RLock()
 	oldLocalSPI, oldRemoteSPI := s.espLocalSPI, s.espRemoteSPI
 	s.childSAMu.RUnlock()
-	return s.completeInitiatedChildSARekeyWithOld(initiatedChildRekey{
+	selected, err := s.completeInitiatedChildSARekeySelected(initiatedChildRekey{
 		payloads: payloads, nonce: initiatorNonce, localSPI: newSPI,
 		oldLocalSPI: oldLocalSPI, oldRemoteSPI: oldRemoteSPI, newDH: newChildDH,
+		offersNone: offer.offersNone(),
 	})
+	if err != nil {
+		return 0, fmt.Errorf("%w (answer: %s)", err, createChildSAOffer(payloads))
+	}
+	return selected, nil
 }
 
 func childSARejectionError(payloads []ikev2.Payload) error {
 	for _, payload := range payloads {
 		notify, ok := payload.(*ikev2.EncryptedPayloadNotify)
 		if ok && notify.NotifyType < 16384 {
-			return &createChildSARejectError{NotifyType: notify.NotifyType}
+			return &createChildSARejectError{
+				NotifyType: notify.NotifyType, NotifyData: append([]byte(nil), notify.NotifyData...),
+			}
 		}
 	}
 	return nil
@@ -155,12 +177,21 @@ func (s *Session) handleIncomingCreateChildSAPacket(packet *ikev2.IKEPacket) err
 	if err != nil {
 		return err
 	}
-	return s.handleIncomingCreateChildSAParsed(packetIKEHeader(packet).MessageID, payloads)
+	// Before the rekeyMu check: a retransmission gets its first answer, not
+	// TEMPORARY_FAILURE.
+	if handled, err := s.answerRetransmittedCreateChildSA(packetIKEHeader(packet)); handled {
+		return err
+	}
+	return s.handleIncomingCreateChildSAParsed(packetIKEHeader(packet), payloads)
 }
 
-func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ikev2.Payload) error {
+func (s *Session) handleIncomingCreateChildSAParsed(request *ikev2.IKEHeader, payloads []ikev2.Payload) error {
+	msgID := request.MessageID
+	s.Logger.Info("peer CREATE_CHILD_SA request", zap.Uint32("msg_id", msgID),
+		zap.String("offer", createChildSAOffer(payloads)))
 	if !s.rekeyMu.TryLock() {
-		return s.sendRekeyCollisionResponse(msgID)
+		s.Logger.Warn("answered peer CREATE_CHILD_SA with TEMPORARY_FAILURE", zap.String("reason", "local rekey in progress"))
+		return s.sendRekeyCollisionResponse(request)
 	}
 	defer s.rekeyMu.Unlock()
 	protocolID, err := createChildSAProtocol(payloads)
@@ -172,32 +203,47 @@ func (s *Session) handleIncomingCreateChildSAParsed(msgID uint32, payloads []ike
 	)}
 	if protocolID == ikev2.ProtoIKE {
 		if s.hasRetiredIKESA() {
-			return s.sendRekeyCollisionResponse(msgID)
+			s.Logger.Warn("answered peer CREATE_CHILD_SA with TEMPORARY_FAILURE", zap.String("reason", "previous IKE SA still retiring"))
+			return s.sendRekeyCollisionResponse(request)
 		}
 		return s.HandleRekeyIKESARequest(msgID, payloads)
 	}
 	return s.handlePeerChildSARekeyPayloads(packet, payloads)
 }
 
-func (s *Session) sendRekeyCollisionResponse(msgID uint32) error {
-	return s.sendEncryptedResponseWithMsgID([]ikev2.Payload{
-		&ikev2.EncryptedPayloadNotify{NotifyType: ikev2.TEMPORARY_FAILURE},
-	}, ikev2.CREATE_CHILD_SA, msgID)
+// RFC 7296 2.1: a retransmission of this request gets the same refusal. It is
+// recorded under the IKE SA the request came on, never one installed since.
+func (s *Session) sendRekeyCollisionResponse(request *ikev2.IKEHeader) error {
+	payloads := []ikev2.Payload{&ikev2.EncryptedPayloadNotify{NotifyType: ikev2.TEMPORARY_FAILURE}}
+	s.recordCreateChildSAAnswer(request.MessageID, request.SPIi, request.SPIr, payloads)
+	return s.sendEncryptedResponseWithMsgID(payloads, ikev2.CREATE_CHILD_SA, request.MessageID)
 }
 
 func createChildSAProtocol(payloads []ikev2.Payload) (ikev2.ProtocolID, error) {
+	offered := false
 	for _, payload := range payloads {
 		sa, ok := payload.(*ikev2.EncryptedPayloadSA)
-		if !ok || len(sa.Proposals) != 1 || sa.Proposals[0] == nil {
+		if !ok {
 			continue
 		}
-		protocolID := sa.Proposals[0].ProtocolID
-		if protocolID != ikev2.ProtoIKE && protocolID != ikev2.ProtoESP {
-			return 0, fmt.Errorf("swu: unsupported CREATE_CHILD_SA protocol %d", protocolID)
+		// RFC 7296 2.7: unacceptable proposals do not stop the others from
+		// being processed, so the first IKE or ESP proposal decides.
+		for _, proposal := range sa.Proposals {
+			if proposal == nil {
+				continue
+			}
+			offered = true
+			if proposal.ProtocolID == ikev2.ProtoIKE || proposal.ProtocolID == ikev2.ProtoESP {
+				return proposal.ProtocolID, nil
+			}
 		}
-		return protocolID, nil
 	}
-	return 0, errors.New("swu: CREATE_CHILD_SA request missing a single SA proposal")
+	if offered {
+		// Only unsupported protocols: the CHILD_SA path refuses it with a
+		// notify and keeps the session.
+		return ikev2.ProtoESP, nil
+	}
+	return 0, fmt.Errorf("swu: CREATE_CHILD_SA request has no SA proposal (payloads: %s)", createChildSAOffer(payloads))
 }
 
 func (s *Session) handleIncomingInformationalPacket(packet *ikev2.IKEPacket) error {

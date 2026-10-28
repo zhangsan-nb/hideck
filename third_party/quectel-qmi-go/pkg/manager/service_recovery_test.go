@@ -342,6 +342,24 @@ func TestVOICERecoveryRebindThenRetrySuccess(t *testing.T) {
 	}
 }
 
+func TestRestoreVOICEIndicationsUsesRegistrationHook(t *testing.T) {
+	m := newRecoveryTestManager()
+	calls := 0
+	m.registerVOICEIndications = func(_ context.Context, cfg qmi.VoiceIndicationRegistration) error {
+		calls++
+		if !cfg.CallNotificationEvents {
+			t.Fatal("call notification events were not requested")
+		}
+		return nil
+	}
+	if err := m.restoreVOICEIndications(&qmi.VOICEService{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("registration calls=%d", calls)
+	}
+}
+
 func TestWMSRecoveryRebindThenRetrySuccessAndReplay(t *testing.T) {
 	m := newRecoveryTestManager()
 	m.ensureWMSServiceHook = func() (*qmi.WMSService, error) { return &qmi.WMSService{}, nil }

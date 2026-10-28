@@ -109,7 +109,7 @@ func TestBuildCPRequestPayloadHonorsIPStack(t *testing.T) {
 			if attribute.Type != want {
 				t.Errorf("IPStack %q attribute[%d] = %d, want %d", test.mode, index, attribute.Type, want)
 			}
-			if want == ikev2.CPAttrIP6Address && (len(attribute.Value) != 17 || attribute.Value[16] != 64) {
+			if want == ikev2.CPAttrIP6Address && len(attribute.Value) != 0 {
 				t.Errorf("IPv6 request = %x", attribute.Value)
 			}
 		}

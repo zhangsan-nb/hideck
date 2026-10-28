@@ -48,3 +48,18 @@ func TestIsChannelNameCoversEveryFactory(t *testing.T) {
 		t.Fatal("channelNames lists a channel without a factory")
 	}
 }
+
+func TestUpdateDeviceFiltersDoesNotReconnectChannels(t *testing.T) {
+	channel := &captureChannel{}
+	m := &Manager{}
+	m.installChannels([]Channel{channel}, nil)
+
+	m.UpdateDeviceFilters(map[string][]string{"capture": {"wwan1"}})
+	m.broadcastWithContext(NotificationContext{Event: "sms_received", DeviceID: "wwan0", Text: "blocked"})
+	m.broadcastWithContext(NotificationContext{Event: "sms_received", DeviceID: "wwan1", Text: "delivered"})
+
+	waitUntil(t, time.Second, func() bool { return len(channel.messages()) == 1 })
+	if got := channel.Last(); got != "delivered" {
+		t.Fatalf("last message = %q, want delivered", got)
+	}
+}

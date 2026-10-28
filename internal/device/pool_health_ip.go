@@ -545,8 +545,15 @@ func representativeIP(publicV4, publicV6 string) string {
 }
 
 func (p *Pool) refreshIPs(worker *Worker, checkPublic bool) {
+	if p == nil || worker == nil {
+		return
+	}
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
+	if !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
 	nc := worker.NetworkController()
-	if worker == nil || nc == nil || !nc.IsConnected() {
+	if nc == nil || !nc.IsConnected() {
 		return
 	}
 
@@ -578,10 +585,19 @@ func (p *Pool) refreshIPs(worker *Worker, checkPublic bool) {
 
 		privateIP := nc.GetPrivateIP()
 		privateIPv6 := nc.GetPrivateIPv6()
+		var publicV4, publicV6 string
+		if checkPublic {
+			publicV4, publicV6 = nc.GetPublicIPv4AndV6NoCache()
+		}
+
+		transition := p.policyTransitionFor(worker.ID)
+		transition.Lock()
+		defer transition.Unlock()
+		if !p.workerLifecycleOwnerCurrent(owner) {
+			return
+		}
 
 		if checkPublic {
-			publicV4, publicV6 := nc.GetPublicIPv4AndV6NoCache()
-
 			worker.cacheMu.Lock()
 			oldIP := worker.cachedIP
 			oldIPv6 := worker.cachedPublicIPv6

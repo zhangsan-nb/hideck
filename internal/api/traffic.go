@@ -11,6 +11,10 @@ import (
 )
 
 func (s *Server) handleTrafficAnalysis(c *gin.Context) {
+	s.useTrafficAnalysis(c)
+}
+
+func (s *Server) useTrafficAnalysis(c businessContext) {
 	rng := c.Query("range")
 	if rng == "" {
 		rng = "day"

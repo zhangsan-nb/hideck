@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type CardPolicy struct {
 	PhoneMode             string    `gorm:"column:phone_mode;default:wifi" json:"phone_mode"`            // wifi | cellular | volte
 	DataStrategy          string    `gorm:"column:data_strategy;default:on_demand" json:"data_strategy"` // always | on_demand
 	VowifiUpstreamProxyID string    `gorm:"column:vowifi_upstream_proxy_id" json:"vowifi_upstream_proxy_id"`
+	LocalPhoneOverride    string    `gorm:"column:local_phone_override" json:"local_phone_override"`
 	Source                string    `gorm:"column:source" json:"source"` // auto | user
 	CreatedAt             time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt             time.Time `gorm:"column:updated_at" json:"updated_at"`
@@ -117,6 +119,11 @@ func UpsertCardPolicy(p CardPolicy) error {
 		return errors.New("db 未初始化")
 	}
 	NormalizeCardPolicy(&p)
+	phone, err := NormalizeManualPhoneNumber(p.LocalPhoneOverride)
+	if err != nil {
+		return fmt.Errorf("invalid local phone override: %w", err)
+	}
+	p.LocalPhoneOverride = phone
 	if p.ICCID == "" {
 		return errors.New("ICCID 为空")
 	}
@@ -136,6 +143,7 @@ func UpsertCardPolicy(p CardPolicy) error {
 			"phone_mode":               p.PhoneMode,
 			"data_strategy":            p.DataStrategy,
 			"vowifi_upstream_proxy_id": p.VowifiUpstreamProxyID,
+			"local_phone_override":     p.LocalPhoneOverride,
 			"source":                   p.Source,
 			"updated_at":               p.UpdatedAt,
 		}),

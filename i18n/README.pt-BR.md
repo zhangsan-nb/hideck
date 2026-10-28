@@ -37,6 +37,16 @@ Gerencie modems USB, proxy celular, SMS, WiFi calling / voz IMS, eSIM e tarefas 
 
 Notas de protocolo: [VoWiFi](../docs/vowifi-protocol-alignment.md) · [VoLTE](../docs/volte-native.md) · [operadoras](../docs/operator-notes.md) · [hardware](../docs/modem-hardware.md)
 
+## MCP / assistentes de IA
+
+O HiDeck oferece 125 ferramentas MCP para dispositivos, redes, SMS, contatos, chamadas, eSIM, MBN, proxies, comandos, saldo, tarefas e diagnóstico. O serviço vem desativado. Ative-o em «MCP 接入» nas configurações e crie um token independente; o valor completo aparece uma única vez.
+
+Há modelos para Codex, Claude Code, Cursor, Gemini CLI, Hermes Agent, DeepSeek dsh, Pi Agent e Grok Build. Copie a configuração ou use «复制给 Agent» para que um Agent com acesso às configurações locais a integre. A conexão usa Streamable HTTP com o HiDeck já em execução; não é necessário instalar outro servidor MCP do HiDeck no computador do Agent.
+
+Use `http://YOUR_IP:7575/mcp` ou o mesmo caminho por HTTPS. Os tokens permitem todas as funções de negócio expostas e podem ser revogados ou excluídos nas configurações. Para controlar chamadas com áudio do navegador, autorize o token em «连接 MCP» na página de telefone e mantenha a página aberta.
+
+Consulte o [guia MCP](../docs/mcp.md) (em chinês) para configuração, requisitos de áudio, diagnóstico e limites.
+
 ## Início rápido
 
 Docker (recomendado). Precisa de Linux, curl, Docker Compose, rede host e acesso USB. A imagem inclui bibliotecas AMR/MP3 para gravação de chamadas.
@@ -89,18 +99,18 @@ curl -fsSL https://raw.githubusercontent.com/yibaiba/hideck/main/deploy-binary.s
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yibaiba/hideck/main/deploy-binary.sh | \
   HIDECK_DIR=/opt/hideck \
-  HIDECK_VERSION=v2.1.23 \
+  HIDECK_VERSION=v2.1.35 \
   HIDECK_ARCH=linux_amd64 sh
 ```
 
 | Arquivo | Plataforma |
 | --- | --- |
-| `hideck_v2.1.23_linux_amd64` | x86_64, glibc + UPX |
-| `hideck_v2.1.23_linux_arm64` | ARM64 / Raspberry Pi OS 64-bit, glibc + UPX |
-| `hideck_v2.1.23_linux_armv7` | ARM 32-bit, glibc + UPX |
-| `hideck_v2.1.23_openwrt_amd64` | OpenWrt x86_64, musl estático, sem UPX |
-| `hideck_v2.1.23_openwrt_arm64` | OpenWrt aarch64 |
-| `hideck_v2.1.23_openwrt_armv7` | OpenWrt ARM 32-bit |
+| `hideck_v2.1.35_linux_amd64` | x86_64, glibc + UPX |
+| `hideck_v2.1.35_linux_arm64` | ARM64 / Raspberry Pi OS 64-bit, glibc + UPX |
+| `hideck_v2.1.35_linux_armv7` | ARM 32-bit, glibc + UPX |
+| `hideck_v2.1.35_openwrt_amd64` | OpenWrt x86_64, musl estático, sem UPX |
+| `hideck_v2.1.35_openwrt_arm64` | OpenWrt aarch64 |
+| `hideck_v2.1.35_openwrt_armv7` | OpenWrt ARM 32-bit |
 
 No OpenWrt use só `openwrt_*`. Veja [packaging/openwrt/README.md](../packaging/openwrt/README.md).
 

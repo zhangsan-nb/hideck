@@ -19,6 +19,8 @@ func TestExecuteSMSFallsBackToCSWithoutDoubleSend(t *testing.T) {
 	worker := &device.Worker{ID: "wwan0", Config: config.DeviceConfig{
 		ID: "wwan0", VoWiFiEnabled: true, PhoneMode: "wifi",
 	}}
+	setNestedPrivateField(t, worker, []string{"state", "Identity", "ICCID"}, "8944000000000000501")
+	setNestedPrivateField(t, worker, []string{"state", "Identity", "IMSI"}, "234150000000501")
 	pool.AttachWorkerForTest(worker)
 	vowifiCalls, csCalls := 0, 0
 	pool.SetRoutedSMSTestSenders(
@@ -49,6 +51,8 @@ func TestExecuteSMSDoesNotFallbackAfterIMSAccept(t *testing.T) {
 	worker := &device.Worker{ID: "wwan0", Config: config.DeviceConfig{
 		ID: "wwan0", VoWiFiEnabled: true, PhoneMode: "wifi",
 	}}
+	setNestedPrivateField(t, worker, []string{"state", "Identity", "ICCID"}, "8944000000000000502")
+	setNestedPrivateField(t, worker, []string{"state", "Identity", "IMSI"}, "234150000000502")
 	pool.AttachWorkerForTest(worker)
 	csCalls := 0
 	pool.SetRoutedSMSTestSenders(

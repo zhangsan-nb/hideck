@@ -180,6 +180,7 @@ func carrierOverrideToInternal(value CarrierOverride) policy.CarrierOverride {
 		IKERekeyIntervalSeconds:   value.IKERekeyIntervalSeconds,
 		WithholdDeviceIdentity:    value.WithholdDeviceIdentity,
 		KeepChildSAOnRekeyDecline: value.KeepChildSAOnRekeyDecline,
+		DeferPeerChildRekeySwitch: value.DeferPeerChildRekeySwitch,
 		IMSTransport:              strings.TrimSpace(value.IMS.Transport),
 		E911: policy.E911PolicyOverride{
 			Provider: value.E911.Provider, EntitlementURL: value.E911.EntitlementURL,
@@ -221,6 +222,8 @@ func copyTemplateScalarOverrides(result *policy.IMSRegisterTemplateOverride, val
 	result.IncludeConnectionKeepaliveInAuth = trueBoolPointer(value.IncludeConnectionKeepaliveInAuth)
 	result.SecurityClientIncludesServerParams = trueBoolPointer(value.SecurityClientIncludesServerParams)
 	result.StrictSecurityServerOffer = trueBoolPointer(value.StrictSecurityServerOffer)
+	result.AcceptRegisterContactWithoutUser = trueBoolPointer(value.AcceptRegisterContactWithoutUser)
+	result.RPReportOverPortUS = trueBoolPointer(value.RPReportOverPortUS)
 	result.EnableInitialRejectFallback = trueBoolPointer(value.EnableInitialRejectFallback)
 	result.FallbackIncludesServerParamsInSecCl = trueBoolPointer(value.FallbackIncludesServerParamsInSecCl)
 }

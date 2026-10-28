@@ -7,6 +7,7 @@ const phoneCSS = await readFile(new URL('../src/styles/phone.css', import.meta.u
 const phoneStore = await readFile(new URL('../src/stores/phone.ts', import.meta.url), 'utf8')
 const dialPad = await readFile(new URL('../src/components/PhoneDialPad.vue', import.meta.url), 'utf8')
 const callBar = await readFile(new URL('../src/components/PhoneCallBar.vue', import.meta.url), 'utf8')
+const callHistory = await readFile(new URL('../src/components/PhoneCallHistory.vue', import.meta.url), 'utf8')
 const contactsPanel = await readFile(new URL('../src/components/PhoneContactsPanel.vue', import.meta.url), 'utf8')
 const contactsDrawer = await readFile(new URL('../src/components/PhoneContactsDrawer.vue', import.meta.url), 'utf8')
 const contactImporter = await readFile(new URL('../src/composables/useContactImport.ts', import.meta.url), 'utf8')
@@ -22,6 +23,14 @@ test('dialer remembers explicit device choices and keeps modem help concise', ()
   assert.match(phoneView, /接通后可用键盘按键/)
   assert.doesNotMatch(phoneView, /目前适配 Linux|首次启用会下载|<p>\{\{ deviceStatus\(selected\) \}\}<\/p>/)
   assert.match(phoneView, /重新准备/)
+})
+
+test('contact form uses themed component-library fields and selection controls', () => {
+  assert.match(contactsDrawer, /<el-input ref="nameInput"/)
+  assert.match(contactsDrawer, /<el-input[\s\S]*?v-model="draftNumber"/)
+  assert.match(contactsDrawer, /<el-checkbox[\s\S]*?:model-value="groupSelected\(group\)"/)
+  assert.match(contactsDrawer, /<el-checkbox[\s\S]*?:model-value="selected\.includes\(item\.number\)"/)
+  assert.doesNotMatch(contactsDrawer, /<input[^>]+type="checkbox"/)
 })
 
 test('RF mode changes confirm first and keep full preparation errors outside device labels', () => {
@@ -116,6 +125,29 @@ test('hangup feedback stays pending until the real call-ended event arrives', ()
   assert.match(phoneView, /已发送挂断请求/)
   assert.match(callBar, /phoneCallStatusLabel\(call, callEnding\)/)
   assert.match(callBar, /正在挂断电话/)
+})
+
+test('call history exposes recording failures and releases obsolete blob URLs', () => {
+  assert.match(callHistory, /phoneErrorMessage\(error, '录音加载失败'\)/)
+  assert.match(callHistory, /recordingErrors\[record\.id\]/)
+  assert.match(callHistory, /URL\.revokeObjectURL\(url\)/)
+  assert.match(callHistory, /current\?\.recording_name !== name/)
+  assert.match(callHistory, /watch\(\(\) => props\.records,[\s\S]*syncRecordingState\(\)/)
+  assert.match(callHistory, /<audio[\s\S]*controls[\s\S]*preload="none"/)
+})
+
+test('call history supports explicit single and batch deletion', () => {
+  assert.match(callHistory, /<el-dropdown[\s\S]*@command="handleRecordCommand\(record, \$event\)"/)
+  assert.match(callHistory, /command="redial"/)
+  assert.match(callHistory, /command="contact"/)
+  assert.match(callHistory, /command="delete"/)
+  assert.match(callHistory, /class="history-bulk-bar"/)
+  assert.match(callHistory, /toggleSelectAll/)
+  assert.match(callHistory, /phone\.deleteHistory\(records\.map\(\(record\) => record\.id\)\)/)
+  assert.match(callHistory, /ElMessageBox\.confirm/)
+  assert.match(callHistory, /activeStatuses\.has\(record\.status\)/)
+  assert.match(callHistory, /\.record-menu-button \{ width: 44px; height: 44px;/)
+  assert.doesNotMatch(callHistory, /class="play-button"/)
 })
 
 test('phone device picker uses the themed select without changing availability rules', () => {

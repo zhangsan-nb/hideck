@@ -9,6 +9,9 @@ type smsReceptionEvidence struct {
 	path              downlinkCheckpoint
 	failureGeneration uint64
 	failed            bool
+	// An RP report over the registration flow failed, so a closed port-s is
+	// not just awaiting the P-CSCF. Cleared by the next proof or port-s open.
+	reportFailed bool
 }
 
 type smsReceptionCheckpoint struct {
@@ -35,6 +38,7 @@ func (s *Service) recordRegistrationSMS(peer net.Conn, checkpoint smsReceptionCh
 		s.smsReception.peer = peer
 		s.smsReception.path = checkpoint.path
 		s.smsReception.failed = false
+		s.smsReception.reportFailed = false
 	}
 	s.mu.Unlock()
 	if current {
@@ -50,12 +54,19 @@ func (s *Service) invalidateSMSReceptionLocked() {
 
 func (s *Service) recordRegistrationSMSReportFailure(peer net.Conn, checkpoint smsReceptionCheckpoint) {
 	s.mu.Lock()
-	current := s.currentSMSReceptionLocked(peer, checkpoint)
-	if current {
+	// A port-s close during the report retries moves the failure epoch but
+	// does not repair the registration flow the report failed on.
+	sameFlow := s.currentSMSReceptionLocked(peer, checkpoint) ||
+		s.currentSMSReceptionLocked(peer, smsReceptionCheckpoint{
+			path: checkpoint.path, failureGeneration: s.smsReception.failureGeneration,
+		})
+	if sameFlow {
+		// Advance the epoch so an MT already in flight cannot erase this fault.
 		s.invalidateSMSReceptionLocked()
+		s.smsReception.reportFailed = true
 	}
 	s.mu.Unlock()
-	if current {
+	if sameFlow {
 		s.notifySMSReadiness()
 	}
 }

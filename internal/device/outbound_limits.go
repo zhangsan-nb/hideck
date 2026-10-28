@@ -30,6 +30,43 @@ func (p *Pool) AuthorizeOutboundCall(ctx context.Context, id, number string) err
 	return p.consumeOutbound(ctx, p.GetWorker(id), outbound.Request{Kind: outbound.Call, Units: 1})
 }
 
+// DialAuthorizedCellularCall keeps the SIM owner stable from quota charging
+// through the modem dial command.
+func (p *Pool) DialAuthorizedCellularCall(ctx context.Context, worker *Worker, number string) error {
+	if p == nil || worker == nil || worker.Modem == nil {
+		return errors.New("cellular calling requires an AT modem channel")
+	}
+	release, err := p.acquireOutboundOperation(worker)
+	if err != nil {
+		return err
+	}
+	defer release()
+	checkOwner := p.outboundOwnerCheck(worker)
+	if err := p.AuthorizeOutboundCall(ctx, worker.ID, number); err != nil {
+		return err
+	}
+	if err := checkOwner(); err != nil {
+		return err
+	}
+	return worker.Modem.DialCall(number)
+}
+
+func (p *Pool) acquireOutboundOperation(worker *Worker) (func(), error) {
+	if p == nil || worker == nil {
+		return nil, errors.New("outbound operation requires an active device")
+	}
+	releaseDevice, err := p.AcquireDeviceOperation(worker.ID)
+	if err != nil {
+		return nil, err
+	}
+	transition := p.policyTransitionFor(worker.ID)
+	transition.Lock()
+	return func() {
+		transition.Unlock()
+		releaseDevice()
+	}, nil
+}
+
 type outboundSMSRequest struct {
 	Worker   *Worker
 	To, Text string

@@ -107,6 +107,11 @@ func (s *Service) registerLocked(ctx context.Context) error {
 	if err == nil {
 		expires, err = s.runRegisterFlow(ctx)
 	}
+	if err != nil && hadBinding && isProtectedPortConflict(err) {
+		// The reset drops the binding this refresh was meant to keep.
+		hadBinding = false
+		expires, err = s.registerWithFreshProtectedPorts(ctx, err)
+	}
 	if err == nil && s.lastRegisterContactCount.Load() > 1 {
 		// A binding left by an earlier run keeps its own Contact URI, so this
 		// registration adds to it rather than replacing it. Clearing it took a
@@ -223,6 +228,8 @@ func (s *Service) runRegisterFlow(ctx context.Context) (time.Duration, error) {
 	}
 	candidates := registerTransportCandidates(s.cfg.Transport)
 	transportIndex := indexOfRegisterTransport(candidates, s.currentRegistrationTransport())
+	s.largeRegisterMovedToTCP.Store(false)
+	s.largeRegisterTCPFailed.Store(false)
 	minExpiresRetried := false
 	useProxyRetried := false
 	for {
@@ -238,14 +245,39 @@ func (s *Service) runRegisterFlow(ctx context.Context) (time.Duration, error) {
 		if result.statusCode == 305 && result.useProxy != "" && !useProxyRetried {
 			s.applyRegisterUseProxy(result.useProxy)
 			s.resetRegistrationTransportForRegistrarRetry()
+			// The proxy gets a fresh transport choice, including the size switch.
+			s.largeRegisterMovedToTCP.Store(false)
+			s.largeRegisterTCPFailed.Store(false)
 			if transportErr := s.ensureRegistrationTransport(ctx); transportErr != nil {
 				return 0, &registerAttemptError{result: result, err: transportErr}
 			}
 			useProxyRetried = true
 			continue
 		}
+		// A SIP response proves that the oversized request reached the registrar.
+		// Do not bypass an explicit rejection (including 408/502-504) by replaying
+		// the same REGISTER over UDP. UDP is only a fallback for a TCP transport
+		// failure where no SIP response was received.
+		if s.largeRegisterMovedToTCP.Load() && result.statusCode != 0 {
+			s.largeRegisterMovedToTCP.Store(false)
+			return 0, &registerAttemptError{result: result, err: err}
+		}
 		if s.usesExternalRegistrationTransport() || !shouldRetryNextRegisterTransport(result, err) {
 			return 0, &registerAttemptError{result: result, err: err}
+		}
+		if s.largeRegisterMovedToTCP.Swap(false) {
+			// The UDP transport the size check skipped is still untried.
+			s.largeRegisterTCPFailed.Store(true)
+			logging.Info("IMS REGISTER over TCP failed after the size switch; retrying over UDP",
+				"device", s.DeviceID(), "status", result.statusCode, "err", err)
+			// Offer only UDP: if it cannot open, the failed TCP must not be reopened.
+			if _, switchErr := s.replaceInitialRegistrationTransport(ctx, []string{"udp"}, 0); switchErr != nil {
+				attemptErr := &registerAttemptError{result: result, err: err}
+				return 0, errors.Join(attemptErr, switchErr)
+			}
+			// TCP has been tried; UDP is the last transport left.
+			transportIndex = len(candidates) - 1
+			continue
 		}
 		next, switchErr := s.replaceInitialRegistrationTransport(ctx, candidates, transportIndex+1)
 		if switchErr != nil {
@@ -364,9 +396,21 @@ func updateRegisterAttemptAuth(result *registerAttemptResult, session *registerS
 }
 
 func (s *Service) commitRegisterSuccess(resp *sipResponse, session *registerSession) (time.Duration, error) {
-	expires, err := registrationExpires(resp, session.requestContact, s.cfg.Expires)
+	acceptWithoutUser := s.cfg.IMSRegisterTemplate.AcceptRegisterContactWithoutUser
+	expires, err := registrationExpires(resp, session.requestContact, s.cfg.Expires, acceptWithoutUser)
 	if err != nil {
+		if errors.Is(err, errRegisterContactMissing) {
+			logging.Info("IMS REGISTER response Contact mismatch",
+				"device", s.DeviceID(), "requested", redactContactUser(session.requestContact),
+				"response", redactedResponseContacts(resp), "response_headers", sipHeaderNames(resp),
+				"accept_without_user", acceptWithoutUser)
+		}
 		return 0, err
+	}
+	if acceptWithoutUser && matchingRegisterContact(resp, session.requestContact, false) == "" {
+		logging.Info("IMS REGISTER binding matched a Contact without the user part",
+			"device", s.DeviceID(), "requested", redactContactUser(session.requestContact),
+			"response", redactedResponseContacts(resp))
 	}
 	s.finalizeRegistrationTransportSwitch()
 	s.lastRegisterContactCount.Store(int32(registerContactBindingCount(resp)))
@@ -519,6 +563,10 @@ func (s *Service) applyRegisterMinExpires(seconds uint32) {
 func (s *Service) exchangeRegister(ctx context.Context, session *registerSession, authorization string) (*sipResponse, error) {
 	s.recordRegisterSession(session)
 	request := s.buildRegister(session, authorization)
+	if s.moveLargeRegisterToTCP(ctx, session, len(request)) {
+		// Via and Contact carry the transport.
+		request = s.buildRegister(session, authorization)
+	}
 	s.logIMSRegistrationAttempt(session, request)
 	logging.Debug("IMS REGISTER outbound", "device", s.DeviceID(), "cseq", session.cseq,
 		"authenticated", strings.TrimSpace(authorization) != "",

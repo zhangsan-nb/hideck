@@ -78,9 +78,12 @@ func (p *Pool) resolveSMSIdentity(deviceID string, requireIMSI bool) (SMSIdentit
 	if err != nil {
 		return SMSIdentity{}, fmt.Errorf("读取设备短信身份失败: %w", err)
 	}
+	store := p.smsIdentityRepository()
+	aliases, _ := store.(smsIMSIAliasChecker)
 	identity, err := mergeSMSIdentities(
 		runtime,
 		smsIdentityCandidate{identity: storedIdentity, present: storedPresent},
+		aliases,
 	)
 	if err != nil {
 		return SMSIdentity{}, err
@@ -124,14 +127,39 @@ func (p *Pool) runtimeSMSIdentity(deviceID string) (smsIdentityCandidate, error)
 	}, nil
 }
 
-func mergeSMSIdentities(runtime, stored smsIdentityCandidate) (SMSIdentity, error) {
+// smsIMSIAliasChecker is implemented by stores that remember every IMSI read on a
+// card, so a multi-IMSI SIM switching EF_IMSI is not treated as a different card.
+type smsIMSIAliasChecker interface {
+	IMSIKnownForICCID(iccid, imsi string) (bool, error)
+}
+
+func (databaseSMSIdentityStore) IMSIKnownForICCID(iccid, imsi string) (bool, error) {
+	return db.IMSIKnownForICCID(iccid, imsi)
+}
+
+func mergeSMSIdentities(runtime, stored smsIdentityCandidate, aliases smsIMSIAliasChecker) (SMSIdentity, error) {
 	runtime.identity = normalizeSMSIdentity(runtime.identity)
 	stored.identity = normalizeSMSIdentity(stored.identity)
 	if runtime.present && stored.present && runtime.identity.ICCID != "" && stored.identity.ICCID != "" && runtime.identity.ICCID != stored.identity.ICCID {
 		return SMSIdentity{}, fmt.Errorf("%w: runtime ICCID differs from stored device binding", ErrSMSIdentityConflict)
 	}
 	if runtime.present && stored.present && runtime.identity.IMSI != "" && stored.identity.IMSI != "" && runtime.identity.IMSI != stored.identity.IMSI {
-		return SMSIdentity{}, fmt.Errorf("%w: runtime IMSI differs from stored SIM binding", ErrSMSIdentityConflict)
+		known := false
+		if aliases != nil {
+			var err error
+			iccid := runtime.identity.ICCID
+			if iccid == "" {
+				iccid = stored.identity.ICCID
+			}
+			known, err = aliases.IMSIKnownForICCID(iccid, runtime.identity.IMSI)
+			if err != nil {
+				return SMSIdentity{}, fmt.Errorf("读取卡的已知 IMSI 失败: %w", err)
+			}
+		}
+		if !known {
+			return SMSIdentity{}, fmt.Errorf("%w: runtime IMSI differs from stored SIM binding (stored %s, runtime %s)",
+				ErrSMSIdentityConflict, maskIMSIPrefix(stored.identity.IMSI), maskIMSIPrefix(runtime.identity.IMSI))
+		}
 	}
 	identity := stored.identity
 	if runtime.identity.ICCID != "" {

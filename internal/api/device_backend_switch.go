@@ -22,6 +22,7 @@ type deviceBackendSwitcher interface {
 }
 
 type backendSwitchPool interface {
+	AcquireManagedDeviceMutation(string) func()
 	GetWorker(string) *device.Worker
 	RemoveWorker(string) error
 	AddWorkerFromConfig(config.DeviceConfig) (*device.Worker, error)
@@ -32,9 +33,10 @@ type backendAttachmentWaiter interface {
 }
 
 type backendSwitchRequest struct {
-	Current config.DeviceConfig
-	Desired config.DeviceConfig
-	Target  string
+	Current           config.DeviceConfig
+	Desired           config.DeviceConfig
+	Target            string
+	MutationLeaseHeld bool
 }
 
 type backendSwitchResult struct {
@@ -75,6 +77,7 @@ type backendSwitchService struct {
 	workerIMEI func(context.Context, *device.Worker) (string, error)
 	openAT     func(string) (manualATSession, error)
 	persist    func(string, string, config.DeviceConfig) error
+	loadConfig func(string) (*config.DeviceConfig, error)
 	configPath string
 }
 
@@ -85,7 +88,14 @@ func newDeviceBackendSwitchService(pool *device.Pool, configPath string) *backen
 		discovery:  discovery,
 		workerIMEI: readBackendSwitchWorkerIMEI,
 		openAT:     openManualATSession,
-		persist:    config.UpdateDeviceInFile,
+		persist: func(path, deviceID string, desired config.DeviceConfig) error {
+			return config.UpdateDeviceInFileValidated(path, config.DeviceUpdateRequest{
+				DeviceID: deviceID,
+				Device:   desired,
+				Validate: managedDeviceListValidator(desired, deviceID, false),
+			})
+		},
+		loadConfig: config.GetDeviceByID,
 		configPath: configPath,
 	}
 }
@@ -101,8 +111,15 @@ func (s *backendSwitchService) Switch(
 	if err != nil {
 		return result, backendSwitchError("validate", result, err)
 	}
-	if s.pool == nil || s.discovery == nil || s.workerIMEI == nil || s.openAT == nil || s.persist == nil {
+	if s.pool == nil || s.discovery == nil || s.workerIMEI == nil || s.openAT == nil || s.persist == nil || s.loadConfig == nil {
 		return result, backendSwitchError("initialize", result, fmt.Errorf("后端切换服务未完整初始化"))
+	}
+	if !req.MutationLeaseHeld {
+		releaseMutation := s.pool.AcquireManagedDeviceMutation(req.Current.ID)
+		defer releaseMutation()
+	}
+	if err := s.verifyCurrentConfig(req.Current); err != nil {
+		return result, backendSwitchError("ownership_changed", result, err)
 	}
 
 	currentAttachment, worker, err := s.resolveCurrentAttachment(ctx, req.Current)
@@ -128,6 +145,21 @@ func (s *backendSwitchService) Switch(
 		Result:     result,
 		ATPortHint: currentAttachment.ATPort,
 	})
+}
+
+func (s *backendSwitchService) verifyCurrentConfig(expected config.DeviceConfig) error {
+	current, err := s.loadConfig(expected.ID)
+	if err != nil {
+		return fmt.Errorf("重新读取设备配置失败: %w", err)
+	}
+	if current == nil {
+		return fmt.Errorf("设备已被删除")
+	}
+	if !strings.EqualFold(strings.TrimSpace(current.DeviceBackend), strings.TrimSpace(expected.DeviceBackend)) ||
+		!config.IMEIMatches(current.ModemIMEI, expected.ModemIMEI) {
+		return fmt.Errorf("设备配置已被其他请求修改")
+	}
+	return nil
 }
 
 func (s *backendSwitchService) verifyPersistAndStart(

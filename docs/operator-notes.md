@@ -34,6 +34,7 @@
 - 切换后的 REGISTER 200 只代表注册成功；新 port-s 建立或收到有效下行 SIP 请求后才算恢复完成。下行未验证的 P-CSCF 保留 30 分钟低优先级，但不由此禁止注册 30 分钟；共享恢复轮次与节点硬退避分别控制何时重试。自动化测试覆盖候选耗尽、跨 runtime 去重、到期恢复、迟到证据、Retry-After 和运营商隔离；仍需部署后结合真短信验收，停止频繁重建不等于短信已恢复。
 - 当前注册 TCP 或 port-s 监听器明确失效时，取消已不存在连接的被动观察等待，不让它阻塞实际恢复；节点真实失败的重试期限仍保留。重叠重鉴权共享恢复状态时，取消操作还需匹配下行尝试编号，旧会话不能清除新会话的等待。监听器 `Accept()` 异常会报告本地错误并请求 runtime 恢复；清理后重新核对监听器归属，并与 REGISTER 完成串行处理，正常关闭和退役监听器的迟到错误不影响新会话。旧 IPsec 安装的清理回调只能移除自己的策略，不能删除后来安装的新策略。相关本地问题已用回归测试复现，不代表已证明它们就是 179 本次缺少下行的原因。
 - `IMS downlink path diagnostics` 在注册成功、替代路径验证到期、监听失败时输出安全元数据；现有 `IMS inbound stats` 和状态 diagnostics 也包含 `network`。用户态网络记录外层 `inner_endpoint`、包桥读入/转换/写出错误、当前 IPsec 的地址、SPI、端口，以及 `flow_c` / `flow_s` 的 SYN、SYN-ACK、ACK、RST、重放/解密失败计数。`outbound_protected` 只代表本地完成加密，必须同时核对包桥写出与对端 ACK；计数不是端到端短信成功证明。无 SYN 也不能仅凭该计数认定网侧没发送，应同时看隧道和解密错误。系统网络或外部传输没有这些诊断时显示 `available: false`。不保存报文正文、短信内容或密钥。
+- 预设 `rp_report_over_port_us`：短信回执第一次仍走 P-CSCF 连到 port_us 的连接，488 恢复是在这条路上做和测的。这条路没有应答时才换到注册流，之后的回执不记住换过的路。
 - 国家代理仍按 MCC `234` 走 GB 规则。VOXI 官方写明漫游不支持 WiFi calling，人在国内需走代理。
 - 真卡验收前：IKE/ESP 仍可能要按日志改。余额查询未做自动短码（走 App）。
 
@@ -51,17 +52,36 @@
 ## Spark NZ（530/05）
 
 - 预设在首次 IKE_AUTH 中不主动发送设备身份；如果网侧明确请求，则在网络认证通过后回复可用的 IMEI。已建立的 IKE SA 上也支持 INFORMATIONAL 设备身份请求。
+- 现在所有运营商默认都不主动发送。确实要求主动发送的运营商，在预设或 `config/carrier_overrides.yaml` 里把 `withhold_device_identity` 设为 `false`。
 - 预设在 CHILD_SA rekey 收到 `NO_ADDITIONAL_SAS` 时保留当前 CHILD_SA。这是 Spark 兼容策略，不是所有运营商的默认行为。
-- 两个开关均可通过 `config/carrier_overrides.yaml` 显式关闭；不填写则继承预设。修改后需重启服务并重新建立会话。例如：
+- ESP 提案先报 `aes256-sha1` 再报 `aes256-sha256`。Spark 在隧道建立 7h12m 后发起 CHILD_SA rekey，报价是 SHA1 不带 PFS、或 SHA256 加 D-H 14；只接受和当前套件一致、不带 PFS 的那个，所以 IKE_AUTH 选中 SHA1 时 rekey 才能成功，否则回绝并保留当前 SA，到 8 小时 Spark 删 IKE SA 后重连。
+- 预设 `defer_peer_child_rekey_switch`：应答对方的 CHILD_SA rekey 后，继续在旧 SA 上发送，直到新 SA 上收到对方的合法包、对方删除旧 SA 或对方换密钥这个新 SA（RFC 7296 2.8）。对方一直不用时留在旧 SA，期间不发起本端 CHILD_SA 换密钥；IKE SA 结束时一并清掉。
+- 三个开关均可通过 `config/carrier_overrides.yaml` 显式关闭；不填写则继承预设。修改后需重启服务并重新建立会话。例如：
 
   ```yaml
   carrier_overrides:
     "53005":
       withhold_device_identity: false
       keep_child_sa_on_rekey_decline: false
+      defer_peer_child_rekey_switch: false
   ```
 
 - 自动化测试覆盖身份请求编码、认证门控、发送失败和配置覆盖；不替代 Spark、VOXI 或其他运营商的真卡验收。
+
+## 2degrees NZ（530/24）
+
+- REGISTER 的 200 里列出的 Contact 去掉了用户部分，只剩内层 IP 和端口。按 RFC 3261 §10.2.4、§19.1.4 比对不上，会被判注册失败。
+- 预设 `accept_register_contact_without_user`：带用户部分比对不上时，去掉我们这边的用户部分再按同样的 URI 比较规则比一次，对上就按注册成功处理，日志记 `IMS REGISTER binding matched a Contact without the user part`。这是 2degrees 兼容策略，其他运营商比对不上仍判失败。
+- 可通过 `config/carrier_overrides.yaml` 关闭，修改后需重启服务：
+
+  ```yaml
+  carrier_overrides:
+    "53024":
+      ims_register_template:
+        accept_register_contact_without_user: false
+  ```
+
+- 短信回执（RP-ACK）走 P-CSCF 连到 port_us 的连接会回 403。现在所有运营商的回执默认从注册流（port_uc 到 port_ps）发，预设打开 `rp_report_over_port_us` 才先走 port_us 的连接。
 
 ## 德国 O2（262/03、262/07）
 

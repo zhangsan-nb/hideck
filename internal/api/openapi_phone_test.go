@@ -40,7 +40,7 @@ func phoneOpenAPIPaths() []string {
 		"/phone/calls/active", "/phone/calls/{call_id}/answer", "/phone/calls/{call_id}/reject",
 		"/phone/calls/{call_id}/dtmf", "/phone/calls/{call_id}/hold", "/phone/calls/{call_id}/resume",
 		"/phone/calls/{call_id}", "/phone/calls/{call_id}/media",
-		"/phone/events", "/phone/history", "/phone/recordings/{recording}",
+		"/phone/events", "/phone/history", "/phone/history/delete", "/phone/recordings/{recording}",
 	}
 }
 

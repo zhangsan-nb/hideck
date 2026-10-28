@@ -9,7 +9,7 @@ import (
 	"github.com/yibaiba/hideck/internal/outbound"
 )
 
-func respondOutboundLimit(c *gin.Context, err error) bool {
+func respondOutboundLimit(c businessContext, err error) bool {
 	var limited *outbound.LimitedError
 	if !errors.As(err, &limited) {
 		return false

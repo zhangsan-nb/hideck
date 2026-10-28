@@ -29,6 +29,28 @@ type telegramCommandReply struct {
 	attachments []CommandAttachment
 }
 
+func (t *TelegramChannel) SendNotificationWithAttachments(ctx NotificationContext, attachments []CommandAttachment) error {
+	if t == nil || t.api == nil {
+		return nil
+	}
+	t.stateMu.RLock()
+	target := t.defaultTarget
+	t.stateMu.RUnlock()
+	if target == 0 {
+		return ErrNoTelegramTarget
+	}
+	var sendErrors []error
+	for _, attachment := range attachments {
+		if err := t.sendRecording(target, attachment); err != nil {
+			sendErrors = append(sendErrors, err)
+		}
+	}
+	if err := t.sendTo(target, ctx.Text); err != nil {
+		sendErrors = append(sendErrors, err)
+	}
+	return errors.Join(sendErrors...)
+}
+
 func (c *tgCommandContext) Reply(text string) {
 	if c == nil || c.channel == nil {
 		return

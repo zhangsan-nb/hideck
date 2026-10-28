@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,12 +15,18 @@ import (
 )
 
 type backendSwitchPoolStub struct {
+	mutationMu  sync.Mutex
 	worker      *device.Worker
 	removeCalls int
 	addCalls    int
 	added       config.DeviceConfig
 	removeErr   error
 	addErr      error
+}
+
+func (p *backendSwitchPoolStub) AcquireManagedDeviceMutation(string) func() {
+	p.mutationMu.Lock()
+	return p.mutationMu.Unlock
 }
 
 func (p *backendSwitchPoolStub) GetWorker(string) *device.Worker { return p.worker }
@@ -143,6 +150,17 @@ func TestBackendSwitchServiceDiscoveryTimeoutPreservesConfig(t *testing.T) {
 	}
 }
 
+func TestBackendSwitchServiceRejectsDeletedDeviceAfterLease(t *testing.T) {
+	service, pool, _, _, persistCalls := newBackendSwitchTestService("qmi", "mbim", 0)
+	service.loadConfig = func(string) (*config.DeviceConfig, error) { return nil, nil }
+
+	result, err := service.Switch(context.Background(), backendSwitchTestRequest("qmi", "mbim"))
+	assertBackendSwitchFailure(t, err, "ownership_changed")
+	if result.HardwareChanged || *persistCalls != 0 || pool.removeCalls != 0 || pool.addCalls != 0 {
+		t.Fatalf("stale switch mutated device: result=%+v persist=%d pool=%+v", result, *persistCalls, pool)
+	}
+}
+
 func TestBackendSwitchServiceAmbiguousEnumerationStopsBeforeMutation(t *testing.T) {
 	service, pool, waiter, _, persistCalls := newBackendSwitchTestService("qmi", "mbim", 0)
 	pool.worker = nil
@@ -244,6 +262,10 @@ func newBackendSwitchTestService(
 		persist: func(string, string, config.DeviceConfig) error {
 			persistCalls++
 			return nil
+		},
+		loadConfig: func(string) (*config.DeviceConfig, error) {
+			cfg := backendSwitchTestRequest(current, target).Current
+			return &cfg, nil
 		},
 		configPath: "config.yaml",
 	}

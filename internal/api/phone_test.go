@@ -113,6 +113,18 @@ func TestPhoneRoutesEnforceAuthenticationAndControlLease(t *testing.T) {
 	}
 }
 
+func TestPhoneHistoryActiveDeleteReturnsConflict(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	(&Server{}).respondPhoneError(context, phone.ErrActiveCallHistoryDelete)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"phone_history_active"`) {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
 func TestPhoneEventStreamDisablesProxyBuffering(t *testing.T) {
 	gateway := &phoneRouteGatewayStub{}
 	service, err := phone.NewService(phone.ServiceOptions{

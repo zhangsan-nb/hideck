@@ -83,7 +83,9 @@ func TestRegisterSwitchesFromInitialUDPToProtectedTCP(t *testing.T) {
 	}
 	defer tcpServer.Close()
 	result := make(chan error, 1)
-	go serveUDPChallengeThenTCPSuccess(udpServer, tcpServer, result)
+	release := make(chan struct{})
+	defer close(release)
+	go serveUDPChallengeThenTCPSuccess(udpServer, tcpServer, registrationTestExchange{result: result, release: release})
 
 	network := &captureIPSecNetwork{SystemIMSNetwork: NewSystemIMSNetwork(net.IPv4(127, 0, 0, 1))}
 	svc, err := New(&IMSConfig{
@@ -151,13 +153,12 @@ func TestRegisterPreservesIPSecReservationsAcrossInitialTransportFallback(t *tes
 	if err := svc.Register(ctx); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	// The sec-agree REGISTER is over the RFC 3261 UDP limit, so auto moves it
+	// to TCP before sending; the switch must keep the IPsec reservations.
 	select {
 	case request := <-udpSeen:
-		if !strings.HasPrefix(sipHeaderValue(request, "Via"), "SIP/2.0/UDP ") {
-			t.Fatalf("initial REGISTER did not start on UDP: %q", sipHeaderValue(request, "Via"))
-		}
-	case <-ctx.Done():
-		t.Fatal("initial UDP REGISTER was not observed")
+		t.Fatalf("oversized initial REGISTER went over UDP: %q", sipHeaderValue(request, "Via"))
+	default:
 	}
 	select {
 	case err := <-serverResult:
@@ -285,7 +286,13 @@ func waitForTCPConnectionClose(conn *net.TCPConn) error {
 	return fmt.Errorf("initial REGISTER connection remained open: %w", err)
 }
 
-func serveUDPChallengeThenTCPSuccess(udpServer *net.UDPConn, tcpServer *net.TCPListener, result chan<- error) {
+type registrationTestExchange struct {
+	result  chan<- error
+	release <-chan struct{}
+}
+
+func serveUDPChallengeThenTCPSuccess(udpServer *net.UDPConn, tcpServer *net.TCPListener, exchange registrationTestExchange) {
+	result := exchange.result
 	buffer := make([]byte, 64*1024)
 	n, remote, err := udpServer.ReadFromUDP(buffer)
 	if err != nil {
@@ -355,6 +362,10 @@ func serveUDPChallengeThenTCPSuccess(udpServer *net.UDPConn, tcpServer *net.TCPL
 	}
 	_, err = conn.Write([]byte(registerWireResponse(subscribe, 200, "")))
 	result <- err
+	if err == nil {
+		// Keep the registered flow alive until the test has asserted readiness.
+		<-exchange.release
+	}
 }
 
 // Registration and MWI subscriptions are independent; either may arrive first.

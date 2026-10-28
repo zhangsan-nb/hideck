@@ -1540,6 +1540,21 @@ func (m *Manager) registerVOICEIndicationsWithContext(ctx context.Context, cfg q
 	})
 }
 
+// EnsureVOICEIndications explicitly restores VOICE indication delivery. It is
+// safe to call after radio re-registration and before dialing.
+func (m *Manager) EnsureVOICEIndications(ctx context.Context) error {
+	if m == nil {
+		return ErrServiceNotReady("VOICE")
+	}
+	cfg, enabled := m.voiceIndicationRegistration()
+	if !enabled {
+		return errors.New("VOICE indications are disabled by configuration")
+	}
+	indCtx, cancel := contextWithMaxTimeout(ctx, m.cfg.Timeouts.IndicationRegister)
+	defer cancel()
+	return m.registerVOICEIndicationsWithContext(indCtx, cfg)
+}
+
 func (m *Manager) queryWMSTransportStateWithContext(ctx context.Context) (qmi.WMSTransportNetworkRegistration, error) {
 	if m.queryWMSTransportState != nil {
 		return m.queryWMSTransportState(ctx)

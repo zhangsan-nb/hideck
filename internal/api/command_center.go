@@ -117,6 +117,10 @@ func (s *Server) registerCompatibilityCommandRoutes(api *gin.RouterGroup) {
 }
 
 func (s *Server) handleCommandCatalog(c *gin.Context) {
+	s.useCommandCatalog(c)
+}
+
+func (s *Server) useCommandCatalog(c businessContext) {
 	if !s.requireCommandCenter(c) {
 		return
 	}
@@ -124,6 +128,16 @@ func (s *Server) handleCommandCatalog(c *gin.Context) {
 }
 
 func (s *Server) handleCommandExecute(c *gin.Context) {
+	s.useCommandExecute(c)
+}
+
+func (s *Server) useCommandExecute(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireCommandCenter(c) {
 		return
 	}
@@ -132,7 +146,7 @@ func (s *Server) handleCommandExecute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "命令输入无效或超过 4096 字节"})
 		return
 	}
-	execution, err := s.commandCenter.Execute(c.Request.Context(), commandcenter.ExecuteRequest{Input: request.Input})
+	execution, err := s.commandCenter.Execute(businessRequestContext(c), commandcenter.ExecuteRequest{Input: request.Input})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
 		return
@@ -141,6 +155,10 @@ func (s *Server) handleCommandExecute(c *gin.Context) {
 }
 
 func (s *Server) handleCommandEvents(c *gin.Context) {
+	s.useCommandEvents(c)
+}
+
+func (s *Server) useCommandEvents(c businessContext) {
 	if !s.requireCommandCenter(c) {
 		return
 	}
@@ -156,9 +174,9 @@ func (s *Server) handleCommandEvents(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "before_id 无效"})
 			return
 		}
-		events, err = s.commandCenter.ListEventsBefore(c.Request.Context(), before, limit)
+		events, err = s.commandCenter.ListEventsBefore(businessRequestContext(c), before, limit)
 	} else {
-		events, err = s.commandCenter.ListEvents(c.Request.Context(), after, limit)
+		events, err = s.commandCenter.ListEvents(businessRequestContext(c), after, limit)
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
@@ -168,10 +186,20 @@ func (s *Server) handleCommandEvents(c *gin.Context) {
 }
 
 func (s *Server) handleCommandHistoryClear(c *gin.Context) {
+	s.useCommandHistoryClear(c)
+}
+
+func (s *Server) useCommandHistoryClear(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !s.requireCommandCenter(c) {
 		return
 	}
-	deleted, err := s.commandCenter.ClearCompleted(c.Request.Context())
+	deleted, err := s.commandCenter.ClearCompleted(businessRequestContext(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
 		return
@@ -270,7 +298,7 @@ func (s *Server) streamCommandEvents(c *gin.Context, updates <-chan commandcente
 	}
 }
 
-func (s *Server) requireCommandCenter(c *gin.Context) bool {
+func (s *Server) requireCommandCenter(c businessContext) bool {
 	if s.commandCenter != nil {
 		return true
 	}
@@ -278,7 +306,7 @@ func (s *Server) requireCommandCenter(c *gin.Context) bool {
 	return false
 }
 
-func commandEventCursor(c *gin.Context) (uint64, int, error) {
+func commandEventCursor(c businessContext) (uint64, int, error) {
 	raw := strings.TrimSpace(c.Query("after_id"))
 	if header := strings.TrimSpace(c.GetHeader("Last-Event-ID")); header != "" {
 		raw = header

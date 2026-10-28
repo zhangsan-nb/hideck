@@ -19,6 +19,7 @@ type initiatedChildRekey struct {
 	oldLocalSPI  uint32
 	oldRemoteSPI uint32
 	newDH        *enginecrypto.DiffieHellman
+	offersNone   bool
 }
 
 type childSARekeyRequest struct {
@@ -27,6 +28,24 @@ type childSARekeyRequest struct {
 	tsi      *ikev2.EncryptedPayloadTS
 	tsr      *ikev2.EncryptedPayloadTS
 	dh       *enginecrypto.DiffieHellman
+	// dhGroups lists the offered D-H transforms in order; 0 is NONE. Empty
+	// with a dh offers dh.Group alone.
+	dhGroups []uint16
+}
+
+// childRekeyDHOffer is the D-H part of a UE-initiated CHILD_SA rekey offer.
+type childRekeyDHOffer struct {
+	keGroup uint16   // group of KEi, 0 without KEi
+	groups  []uint16 // offered D-H transforms, 0 is NONE
+}
+
+func (o childRekeyDHOffer) offersNone() bool {
+	for _, group := range o.groups {
+		if group == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) performChildSARekey(ctx context.Context) error {
@@ -35,23 +54,80 @@ func (s *Session) performChildSARekey(ctx context.Context) error {
 	if s.transport() == nil || s.ikeKeys == nil || s.State() != stateEstablished {
 		return errors.New("swu: session not established")
 	}
+	offer := s.childRekeyDHOffer()
+	if !offer.offersNone() {
+		return s.attemptChildSARekey(offer)
+	}
+	// RFC 7296 3.3.2 lets an initiator propose D-H as optional ([G, NONE]) or
+	// leave it out. Some responders refuse the optional form, others the
+	// omitted one: try the form that last worked, the other on
+	// NO_PROPOSAL_CHOSEN.
+	forms := []childRekeyDHOffer{offer, {}}
+	if s.childRekeyOmitDH.Load() {
+		forms[0], forms[1] = forms[1], forms[0]
+	}
+	err := s.attemptChildSARekey(forms[0])
+	if err == nil || !isNoProposalChosen(err) {
+		if err == nil {
+			s.childRekeyOmitDH.Store(len(forms[0].groups) == 0)
+		}
+		return err
+	}
+	s.Logger.Info("CHILD_SA rekey offer refused; retrying with the other D-H form",
+		zap.Uint16s("refused_dh", forms[0].groups), zap.Uint16s("retry_dh", forms[1].groups), zap.Error(err))
+	retryErr := s.attemptChildSARekey(forms[1])
+	if retryErr != nil {
+		return fmt.Errorf("%w (after retrying offered_dh=%v; first attempt: %v)", retryErr, forms[1].groups, err)
+	}
+	s.childRekeyOmitDH.Store(len(forms[1].groups) == 0)
+	return nil
+}
+
+func isNoProposalChosen(err error) bool {
+	var rejection *createChildSARejectError
+	return errors.As(err, &rejection) && rejection.NotifyType == ikev2.NO_PROPOSAL_CHOSEN
+}
+
+func (s *Session) attemptChildSARekey(offer childRekeyDHOffer) error {
 	ni, localSPI, err := s.newChildSAInitiatorMaterial()
 	if err != nil {
 		return err
 	}
 	tsi, tsr := s.currentChildSelectors()
-	newDH, err := s.newChildSARekeyDH()
+	newDH, err := s.newChildSARekeyDH(offer.keGroup)
 	if err != nil {
 		return err
 	}
 	payloads := s.buildChildSARekeyPayloads(childSARekeyRequest{
-		localSPI: localSPI, nonce: ni, tsi: tsi, tsr: tsr, dh: newDH,
+		localSPI: localSPI, nonce: ni, tsi: tsi, tsr: tsr, dh: newDH, dhGroups: offer.groups,
 	})
 	response, err := s.sendEncryptedWithRetry(payloads, ikev2.CREATE_CHILD_SA)
 	if err != nil {
-		return err
+		newDH.Wipe()
+		return fmt.Errorf("%w (offer: %s)", err, createChildSAOffer(payloads))
 	}
-	return s.handleCreateChildSAResp(response, ni, localSPI, newDH)
+	selected, err := s.handleCreateChildSARespOffer(response, ni, localSPI, newDH, offer)
+	if err != nil {
+		return fmt.Errorf("%w (offer: %s; offered_dh=%v ike_dh=%d)",
+			err, createChildSAOffer(payloads), offer.groups, s.dhGroup)
+	}
+	s.Logger.Info("CHILD_SA rekey negotiated",
+		zap.Uint16("dh_group", selected), zap.Uint16s("offered_dh", offer.groups),
+		zap.Uint16("ike_dh_group", s.dhGroup))
+	return nil
+}
+
+// childRekeyDHOffer keeps the D-H group of a CHILD_SA that has PFS. Without
+// PFS it offers the IKE SA group and NONE with KEi in the IKE SA group, so the
+// responder picks PFS or not (RFC 7296 3.3.2, 3.3.6).
+func (s *Session) childRekeyDHOffer() childRekeyDHOffer {
+	if group := s.currentChildDHGroup(); group != 0 {
+		return childRekeyDHOffer{keGroup: group, groups: []uint16{group}}
+	}
+	if s.dhGroup == 0 {
+		return childRekeyDHOffer{}
+	}
+	return childRekeyDHOffer{keGroup: s.dhGroup, groups: []uint16{s.dhGroup, 0}}
 }
 
 func (s *Session) completeInitiatedChildSARekey(
@@ -69,25 +145,43 @@ func (s *Session) completeInitiatedChildSARekey(
 }
 
 func (s *Session) completeInitiatedChildSARekeyWithOld(rekey initiatedChildRekey) error {
+	_, err := s.completeInitiatedChildSARekeySelected(rekey)
+	return err
+}
+
+// completeInitiatedChildSARekeySelected installs the answered CHILD_SA and
+// returns the selected D-H group, 0 when the responder chose NONE.
+func (s *Session) completeInitiatedChildSARekeySelected(rekey initiatedChildRekey) (uint16, error) {
 	installed := false
+	offeredKE := rekey.newDH
 	defer func() {
-		if !installed && rekey.newDH != nil {
-			enginecrypto.Wipe(rekey.newDH.SharedKey)
+		if !installed {
+			offeredKE.Wipe()
 		}
 	}()
 	tsi, tsr := s.currentChildSelectors()
 	selection, err := validateChildSAResponse(rekey.payloads, childSAOffer{
 		encryption: s.espCipher, encryptionKeyBits: s.espEncKeyBits, integrity: s.espInteg,
-		dhGroup: childDHGroup(rekey.newDH), esn: s.espESN,
+		dhGroup: childDHGroup(rekey.newDH), dhNoneOffered: rekey.offersNone, esn: s.espESN,
 		tsi: tsi, tsr: tsr, localIPs: configuredInnerIPs(s),
 		requireSA: true, requireNonce: true,
 	})
 	if err != nil {
-		return err
+		return 0, err
+	}
+	if selection.dhGroup == 0 && rekey.newDH != nil {
+		// RFC 7296 3.3.6: with NONE selected the responder ignores KEi and
+		// omits KEr; a KEr sent anyway is not used.
+		if hasKEPayload(rekey.payloads) {
+			s.Logger.Warn("CHILD_SA rekey selected D-H NONE but answered with KE; ignoring it",
+				zap.String("ke_payloads", describeKEPayloads(rekey.payloads)))
+			rekey.payloads = withoutKEPayloads(rekey.payloads)
+		}
+		rekey.newDH = nil
 	}
 	sharedSecret, err := childRekeySharedSecret(rekey.payloads, rekey.newDH)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	runtime, err := s.prepareChildSARuntime(
 		childSARuntimeSpec{
@@ -98,10 +192,14 @@ func (s *Session) completeInitiatedChildSARekeyWithOld(rekey initiatedChildRekey
 		},
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := s.activateChildSARuntime(runtime); err != nil {
-		return err
+		return 0, err
+	}
+	installed = true
+	if offeredKE != rekey.newDH {
+		offeredKE.Wipe()
 	}
 	if err := s.deleteOldChildSA(rekey.oldRemoteSPI, rekey.oldLocalSPI); err != nil {
 		logger.Warn("CHILD_SA rekey switched but old SA delete failed", zap.Error(err))
@@ -110,8 +208,40 @@ func (s *Session) completeInitiatedChildSARekeyWithOld(rekey initiatedChildRekey
 		s.retireInboundChildSA(rekey.oldLocalSPI)
 	}
 	s.markChildRekeyComplete()
-	installed = true
-	return nil
+	return selection.dhGroup, nil
+}
+
+// moveESNLast keeps the IKE_AUTH transform order ENCR, INTEG, D-H, ESN.
+func moveESNLast(proposal *ikev2.Proposal) {
+	var esn []*ikev2.Transform
+	kept := proposal.Transforms[:0]
+	for _, transform := range proposal.Transforms {
+		if transform != nil && transform.Type == ikev2.TransformTypeESN {
+			esn = append(esn, transform)
+			continue
+		}
+		kept = append(kept, transform)
+	}
+	proposal.Transforms = append(kept, esn...)
+}
+
+func withoutKEPayloads(payloads []ikev2.Payload) []ikev2.Payload {
+	kept := make([]ikev2.Payload, 0, len(payloads))
+	for _, payload := range payloads {
+		if payload == nil || payload.Type() != ikev2.PayloadKE {
+			kept = append(kept, payload)
+		}
+	}
+	return kept
+}
+
+func hasKEPayload(payloads []ikev2.Payload) bool {
+	for _, payload := range payloads {
+		if payload != nil && payload.Type() == ikev2.PayloadKE {
+			return true
+		}
+	}
+	return false
 }
 
 func childRekeySharedSecret(
@@ -159,8 +289,7 @@ func (s *Session) newChildSAInitiatorMaterial() ([]byte, uint32, error) {
 	return nonce, spi, nil
 }
 
-func (s *Session) newChildSARekeyDH() (*enginecrypto.DiffieHellman, error) {
-	group := s.currentChildDHGroup()
+func (s *Session) newChildSARekeyDH(group uint16) (*enginecrypto.DiffieHellman, error) {
 	if group == 0 {
 		return nil, nil
 	}
@@ -205,8 +334,15 @@ func (s *Session) buildChildSARekeyPayloads(request childSARekeyRequest) []ikev2
 	oldInboundSPI := s.espLocalSPI
 	s.childSAMu.RUnlock()
 	proposals := buildESPProposalsForSession(s, request.localSPI)
-	if request.dh != nil {
-		proposals[0].AddTransform(ikev2.TransformTypeDH, ikev2.AlgorithmType(request.dh.Group), 0)
+	groups := request.dhGroups
+	if len(groups) == 0 && request.dh != nil {
+		groups = []uint16{request.dh.Group}
+	}
+	for _, group := range groups {
+		proposals[0].AddTransform(ikev2.TransformTypeDH, ikev2.AlgorithmType(group), 0)
+	}
+	if len(groups) > 0 {
+		moveESNLast(proposals[0])
 	}
 	payloads := []ikev2.Payload{
 		&ikev2.EncryptedPayloadSA{Proposals: proposals},

@@ -20,12 +20,13 @@ export function createVoLTEStages(
   hasSIM: boolean | undefined,
   status?: NativeVoLTEStatus
 ): readonly VoLTEConnectionStage[] {
+  const voiceReady = status?.voice_indications_ready === false ? false : status?.voice_available
   return Object.freeze([
     Object.freeze({ key: 'SIM', ready: hasSIM }),
     Object.freeze({ key: 'LTE', ready: volteStageReady(status?.lte_registered, status) }),
     Object.freeze({ key: 'PDN', ready: volteStageReady(status?.ims_pdn_active, status) }),
     Object.freeze({ key: 'IMS', ready: volteStageReady(status?.ims_registered, status) }),
-    Object.freeze({ key: 'Voice', ready: volteStageReady(status?.voice_available, status) })
+    Object.freeze({ key: 'Voice', ready: volteStageReady(voiceReady, status) })
   ])
 }
 

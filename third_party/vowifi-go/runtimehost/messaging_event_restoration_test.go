@@ -23,17 +23,20 @@ func TestModuleEventFromInternalPreservesRecoveredFields(t *testing.T) {
 	received := moduleEventFromInternal(events.EventSMSReceived{
 		DevID: "dev-1", Sender: "+100", Content: "reply", Time: at,
 		TargetURI: "sip:local@example.com", FragmentSessionKey: "fragment-1", Incomplete: true,
+		ICCID: "8944100000000000001", IMSI: "00101",
 	}).(eventhost.SMSReceived)
 	if received.DevID != "dev-1" || received.Sender != "+100" || received.Content != "reply" ||
 		!received.Time.Equal(at) || received.TargetURI != "sip:local@example.com" ||
-		received.FragmentSessionKey != "fragment-1" || !received.Incomplete {
+		received.FragmentSessionKey != "fragment-1" || !received.Incomplete ||
+		received.ICCID != "8944100000000000001" || received.IMSI != "00101" {
 		t.Fatalf("received event = %+v", received)
 	}
 
 	local := moduleEventFromInternal(events.EventLocalNumberLearned{
 		DevID: "dev-1", IMSI: "00101", Number: "+101", Source: "associated-uri", Time: at,
+		ICCID: "8944100000000000001",
 	}).(eventhost.LocalNumberLearned)
-	if local.DeviceID() != "dev-1" || !local.Time.Equal(at) {
+	if local.DeviceID() != "dev-1" || !local.Time.Equal(at) || local.ICCID != "8944100000000000001" {
 		t.Fatalf("local-number event = %+v", local)
 	}
 	logEvent := moduleEventFromInternal(events.EventLogNotify{DevID: "dev-1", Message: "notice"})

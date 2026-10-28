@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -84,6 +85,36 @@ func TestUpdateSIMCardPhoneNumberByIMSICreatesSubscriptionOnly(t *testing.T) {
 	}
 	if got := countSIMCardsByICCID(t, "reader-imsi-imsi-reader-1"); got != 0 {
 		t.Fatalf("synthetic sim_cards row count=%d want 0", got)
+	}
+}
+
+func TestRecordVoWiFiPhoneNumberRejectsStaleICCIDForReusedIMSI(t *testing.T) {
+	initPhoneNumberTestDB(t)
+	const (
+		imsi     = "234150000000701"
+		oldICCID = "8944100000000000701"
+		newICCID = "8944100000000000702"
+	)
+	if err := UpsertSIMCard(oldICCID, imsi, "", "carrier", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertSIMCard(newICCID, imsi, "", "carrier", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RecordVoWiFiPhoneNumber(imsi, oldICCID, "+447700900701")
+	if !errors.Is(err, ErrSMSIdentityConflict) {
+		t.Fatalf("RecordVoWiFiPhoneNumber(old ICCID) error=%v want identity conflict", err)
+	}
+	if got := loadSIMSubscriptionByIMSI(t, imsi).VowifiPhoneNumber; got != "" {
+		t.Fatalf("stale runtime wrote phone number %q", got)
+	}
+	if err := RecordVoWiFiPhoneNumber(imsi, newICCID, "+447700900702"); err != nil {
+		t.Fatalf("RecordVoWiFiPhoneNumber(current ICCID) error=%v", err)
+	}
+	subscription := loadSIMSubscriptionByIMSI(t, imsi)
+	if subscription.VowifiPhoneNumber != "+447700900702" || subscription.CurrentICCID != newICCID {
+		t.Fatalf("subscription=%+v want current ICCID and learned number", subscription)
 	}
 }
 

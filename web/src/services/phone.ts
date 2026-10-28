@@ -10,6 +10,7 @@ export type PhoneDevice = {
   native_volte?: {
     phase?: string
     ims_registered?: boolean
+    voice_indications_ready?: boolean
     ims_enabled?: boolean
     volte_enabled?: boolean
     voice_available?: boolean
@@ -105,6 +106,10 @@ export const phoneService = {
 
   async history(limit = 50) {
     return (await api.get<{ records: PhoneRecord[] }>('/phone/history', { params: { limit } })).data.records
+  },
+
+  async deleteHistory(ids: number[]) {
+    return (await api.post<{ deleted: number }>('/phone/history/delete', { ids })).data.deleted
   },
 
   async startCall(deviceId: string, callee: string, mediaId: string, lease: string) {

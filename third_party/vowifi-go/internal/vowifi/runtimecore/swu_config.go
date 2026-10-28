@@ -40,6 +40,7 @@ func BuildSWUConfig(cfg SessionConfig) *swu.Config {
 		DeviceIdentityIMEI:        firstNonEmpty(plan.Device.IdentityIMEI, prepared.Profile.IMEI),
 		WithholdDeviceIdentity:    plan.Device.Withhold,
 		KeepChildSAOnRekeyDecline: plan.IKE.KeepChildSAOnRekeyDecline,
+		DeferPeerChildRekeySwitch: plan.IKE.DeferPeerChildRekeySwitch,
 		IKEIdentityMode:           plan.IKE.IKEIdentityMode,
 		AKAChallengeMode:          plan.IKE.AKAChallengeMode,
 		AKAIdentityMode:           plan.IKE.AKAIdentityMode,

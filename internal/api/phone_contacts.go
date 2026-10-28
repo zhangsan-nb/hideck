@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -39,16 +38,24 @@ func (s *Server) registerPhoneContactRoutes(api *gin.RouterGroup) {
 }
 
 func (s *Server) handlePhoneLookup(c *gin.Context) {
+	s.usePhoneLookup(c)
+}
+
+func (s *Server) usePhoneLookup(c businessContext) {
 	number := strings.TrimSpace(c.Query("number"))
 	if number == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "missing_number", "message": "缺少号码"})
 		return
 	}
 	region := s.phoneNumberRegion(c.Query("device_id"))
-	c.JSON(http.StatusOK, db.LookupPhoneIdentityWithRegion(c.Request.Context(), number, region))
+	c.JSON(http.StatusOK, db.LookupPhoneIdentityWithRegion(businessRequestContext(c), number, region))
 }
 
 func (s *Server) handlePhoneContactsList(c *gin.Context) {
+	s.usePhoneContactsList(c)
+}
+
+func (s *Server) usePhoneContactsList(c businessContext) {
 	page, err := contactPageParams(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_pagination", "message": err.Error()})
@@ -72,7 +79,7 @@ func (s *Server) handlePhoneContactsList(c *gin.Context) {
 	})
 }
 
-func contactPageParams(c *gin.Context) (contactPageRequest, error) {
+func contactPageParams(c businessContext) (contactPageRequest, error) {
 	rawLimit, paginated := c.GetQuery("limit")
 	if !paginated {
 		return contactPageRequest{}, nil
@@ -88,16 +95,16 @@ func contactPageParams(c *gin.Context) (contactPageRequest, error) {
 	return contactPageRequest{Limit: limit, Offset: offset, Paginated: true}, nil
 }
 
-func loadPhoneContacts(c *gin.Context, page contactPageRequest) ([]db.PhoneContact, int64, error) {
+func loadPhoneContacts(c businessContext, page contactPageRequest) ([]db.PhoneContact, int64, error) {
 	if !page.Paginated {
-		rows, err := db.ListPhoneContacts(c.Request.Context())
+		rows, err := db.ListPhoneContacts(businessRequestContext(c))
 		return rows, int64(len(rows)), err
 	}
-	total, err := db.CountPhoneContacts(c.Request.Context())
+	total, err := db.CountPhoneContacts(businessRequestContext(c))
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := db.ListPhoneContactsPage(c.Request.Context(), page.Limit, page.Offset)
+	rows, err := db.ListPhoneContactsPage(businessRequestContext(c), page.Limit, page.Offset)
 	return rows, total, err
 }
 
@@ -110,13 +117,23 @@ type phoneContactRequest struct {
 }
 
 func (s *Server) handlePhoneContactsUpsert(c *gin.Context) {
+	s.usePhoneContactsUpsert(c)
+}
+
+func (s *Server) usePhoneContactsUpsert(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req phoneContactRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_json", "message": "请求格式不正确"})
 		return
 	}
 	region := s.phoneNumberRegion(req.DeviceID)
-	row, err := db.UpsertPhoneContactWithRegion(c.Request.Context(), db.PhoneContactInput{
+	row, err := db.UpsertPhoneContactWithRegion(businessRequestContext(c), db.PhoneContactInput{
 		Number: req.Number, Name: req.Name, Region: region, ContactID: req.ContactID,
 	})
 	if err != nil {
@@ -129,17 +146,27 @@ func (s *Server) handlePhoneContactsUpsert(c *gin.Context) {
 		c.JSON(status, gin.H{"status": "error", "code": "contact_save_failed", "message": "保存联系人失败"})
 		return
 	}
-	c.JSON(http.StatusOK, db.LookupPhoneIdentity(c.Request.Context(), row.Number))
+	c.JSON(http.StatusOK, db.LookupPhoneIdentity(businessRequestContext(c), row.Number))
 }
 
 func (s *Server) handlePhoneContactsDelete(c *gin.Context) {
+	s.usePhoneContactsDelete(c)
+}
+
+func (s *Server) usePhoneContactsDelete(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	number := strings.TrimSpace(c.Query("number"))
 	if number == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "missing_number", "message": "缺少号码"})
 		return
 	}
 	region := s.phoneNumberRegion(c.Query("device_id"))
-	if err := db.DeletePhoneContactWithRegion(c.Request.Context(), number, region); err != nil {
+	if err := db.DeletePhoneContactWithRegion(businessRequestContext(c), number, region); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "contact_delete_failed", "message": err.Error()})
 		return
 	}
@@ -167,12 +194,22 @@ func phoneContactIdentities(rows []db.PhoneContact) []any {
 }
 
 func (s *Server) handlePhoneContactsBatchDelete(c *gin.Context) {
+	s.usePhoneContactsBatchDelete(c)
+}
+
+func (s *Server) usePhoneContactsBatchDelete(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req phoneContactDeleteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_json", "message": "请求格式不正确"})
 		return
 	}
-	deleted, err := db.DeletePhoneContactsWithRegion(c.Request.Context(), req.Numbers, s.phoneNumberRegion(req.DeviceID))
+	deleted, err := db.DeletePhoneContactsWithRegion(businessRequestContext(c), req.Numbers, s.phoneNumberRegion(req.DeviceID))
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, db.ErrInvalidPhoneContact) {
@@ -185,7 +222,11 @@ func (s *Server) handlePhoneContactsBatchDelete(c *gin.Context) {
 }
 
 func (s *Server) handlePhoneContactsExport(c *gin.Context) {
-	rows, err := db.ListPhoneContacts(c.Request.Context())
+	s.usePhoneContactsExport(c)
+}
+
+func (s *Server) usePhoneContactsExport(c businessContext) {
+	rows, err := db.ListPhoneContacts(businessRequestContext(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "contacts_export_failed", "message": err.Error()})
 		return
@@ -226,28 +267,16 @@ func (s *Server) handlePhoneContactsImport(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "read_file_failed", "message": "无法读取导入文件"})
 		return
 	}
-	parsed := phonebook.Parse(data, filepath.Base(file.Filename))
-	if len(parsed) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "empty_import", "message": "文件里没有识别到联系人。请用手机或 Google 通讯录导出的 vcf / csv（iOS、Google、三星、小米、华为、OPPO、vivo 都可以）"})
-		return
-	}
-	if len(parsed) > maxContactBatch {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"status": "error", "code": "batch_too_large", "message": "一次最多导入 5000 条，请拆分文件后重试",
-		})
-		return
-	}
-	region := s.phoneNumberRegion(c.PostForm("device_id"))
-	inputs := make([]db.PhoneContactInput, 0, len(parsed))
-	for _, item := range parsed {
-		inputs = append(inputs, db.PhoneContactInput{
-			Number: item.Number, Name: item.Name, Region: region, GroupKey: item.ContactID,
-		})
-	}
-	imported, skipped, err := db.UpsertPhoneContactsWithRegion(c.Request.Context(), inputs, region)
+	result, err := s.importContactContent(c.Request.Context(), contactImportInput{Name: file.Filename, DeviceID: c.PostForm("device_id"), Data: data})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "contact_import_failed", "message": "导入失败"})
+		var failure *contactImportFailure
+		if errors.As(err, &failure) {
+			c.JSON(failure.Status, gin.H{"status": "error", "code": failure.Code, "message": failure.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "contact_import_failed", "message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"imported": imported, "skipped": skipped, "parsed": len(parsed)})
+	c.JSON(http.StatusOK, result)
+
 }

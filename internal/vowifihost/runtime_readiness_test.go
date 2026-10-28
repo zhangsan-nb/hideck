@@ -18,7 +18,7 @@ func (*runtimeReadinessAdapter) IsSwitching(string) bool                      { 
 func (*runtimeReadinessAdapter) WorkerExists(string) bool                     { return true }
 func (*runtimeReadinessAdapter) WaitQMICoreReady(string, time.Duration) error { return nil }
 func (*runtimeReadinessAdapter) WaitWorkerReady(string, time.Duration) error  { return nil }
-func (*runtimeReadinessAdapter) PrepareStart(string, string, string) (PreparedStart, error) {
+func (*runtimeReadinessAdapter) PrepareStart(context.Context, string, string, string) (PreparedStart, error) {
 	return PreparedStart{}, nil
 }
 func (*runtimeReadinessAdapter) BeforeStart(string, runtimehost.Modem, *runtimehost.ProxyConfig) func(context.Context, runtimehost.SessionConfig) error {

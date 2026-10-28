@@ -190,7 +190,10 @@ func (m *Manager) notifySMS(sms device.InboundSMS, source string) {
 		source = "蜂窝"
 	}
 	title := notificationTitle("sms_received")
-	region := m.phoneNumberRegion(deviceID)
+	region := device.PhoneNumberRegionForIMSI(sms.IMSI)
+	if region == "" {
+		region = m.phoneNumberRegion(deviceID)
+	}
 	local := localSIMLabel(sms.IMSI, sms.ICCID, region)
 	fields := []string{"设备", m.deviceLabel(deviceID), "本机", local, "通道", source}
 	fields = append(fields, phoneIdentityFieldsWithRegion("号码", sender, region)...)
@@ -363,6 +366,14 @@ func (m *Manager) deviceLabel(deviceID string) string {
 }
 
 func (m *Manager) broadcastWithContext(ctx NotificationContext) {
+	m.deliverNotification(ctx, nil)
+}
+
+func (m *Manager) broadcastWithAttachments(ctx NotificationContext, attachments []CommandAttachment) {
+	m.deliverNotification(ctx, append([]CommandAttachment(nil), attachments...))
+}
+
+func (m *Manager) deliverNotification(ctx NotificationContext, attachments []CommandAttachment) {
 	ctx.Text = strings.TrimSpace(ctx.Text)
 	if ctx.Text == "" {
 		return
@@ -386,6 +397,12 @@ func (m *Manager) broadcastWithContext(ctx NotificationContext) {
 		go func() {
 			defer delivery.activity.sends.Done()
 			ch := delivery.channel
+			if withAttachments, ok := ch.(notificationAttachmentChannel); ok && len(attachments) > 0 {
+				if err := withAttachments.SendNotificationWithAttachments(ctx, attachments); err != nil {
+					logger.Warn("通知渠道发送录音失败", "channel", ch.Name(), "event", ctx.Event, "err", err)
+				}
+				return
+			}
 			if withCtx, ok := ch.(contextualChannel); ok {
 				if err := withCtx.SendWithContext(ctx); err != nil {
 					logger.Warn("通知渠道发送失败", "channel", ch.Name(), "event", ctx.Event, "err", err)

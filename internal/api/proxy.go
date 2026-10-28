@@ -49,7 +49,11 @@ type proxyConfigRequest struct {
 
 // handleProxyOverview 获取代理配置概览
 func (s *Server) handleProxyOverview(c *gin.Context) {
-	ctx := c.Request.Context()
+	s.useProxyOverview(c)
+}
+
+func (s *Server) useProxyOverview(c businessContext) {
+	ctx := businessRequestContext(c)
 	resp := proxyOverviewResponse{
 		Instances: make([]proxyInstanceDTO, 0),
 		Devices:   make([]proxyDeviceDTO, 0),
@@ -90,7 +94,11 @@ func (s *Server) handleProxyOverview(c *gin.Context) {
 }
 
 func (s *Server) handleProxyInstanceGet(c *gin.Context) {
-	ctx := c.Request.Context()
+	s.useProxyInstanceGet(c)
+}
+
+func (s *Server) useProxyInstanceGet(c businessContext) {
+	ctx := businessRequestContext(c)
 	id := proxyInstanceIDParam(c)
 	inst, err := s.proxyRepo.Get(ctx, id)
 	if err != nil {
@@ -106,7 +114,17 @@ func (s *Server) handleProxyInstanceGet(c *gin.Context) {
 
 // handleProxyUpdateConfig 更新代理配置
 func (s *Server) handleProxyUpdateConfig(c *gin.Context) {
-	ctx := c.Request.Context()
+	s.useProxyUpdateConfig(c)
+}
+
+func (s *Server) useProxyUpdateConfig(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
+	ctx := businessRequestContext(c)
 	var req proxyConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "参数错误: " + err.Error()})
@@ -209,6 +227,16 @@ func normalizeProxyMode(mode string) (string, error) {
 
 // handleProxyInstanceStart 启动代理实例
 func (s *Server) handleProxyInstanceStart(c *gin.Context) {
+	s.useProxyInstanceStart(c)
+}
+
+func (s *Server) useProxyInstanceStart(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := proxyInstanceIDParam(c)
 	if s.proxyMgr == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "代理管理未启用"})
@@ -225,6 +253,16 @@ func (s *Server) handleProxyInstanceStart(c *gin.Context) {
 
 // handleProxyInstanceStop 停止代理实例
 func (s *Server) handleProxyInstanceStop(c *gin.Context) {
+	s.useProxyInstanceStop(c)
+}
+
+func (s *Server) useProxyInstanceStop(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := proxyInstanceIDParam(c)
 	if s.proxyMgr == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "代理管理未启用"})
@@ -241,6 +279,16 @@ func (s *Server) handleProxyInstanceStop(c *gin.Context) {
 
 // handleProxyInstanceRestart 重启代理实例
 func (s *Server) handleProxyInstanceRestart(c *gin.Context) {
+	s.useProxyInstanceRestart(c)
+}
+
+func (s *Server) useProxyInstanceRestart(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := proxyInstanceIDParam(c)
 	if s.proxyMgr == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "代理管理未启用"})

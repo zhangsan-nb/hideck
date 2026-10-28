@@ -302,6 +302,7 @@ type Manager struct {
 	onSwitchFailed       func(SwitchOperation, uint64, error)              // 切卡失败后执行的回调
 	onSwitchDegraded     func(SwitchOperation, uint64, SwitchPhase, error) // 切卡已接受但后处理降级回调
 	onSwitchPhase        func(SwitchOperation, uint64, SwitchPhase)        // 切卡内部阶段变更回调
+	acquireSwitchLease   func(SwitchOperation, string) (func(), error)
 	switchSignal         chan string
 	switchUseRefreshTrue bool
 
@@ -312,6 +313,29 @@ type Manager struct {
 	// channelCtx is inherited by context-aware APDU channels created for the
 	// active download or profile state transition.
 	channelCtx atomic.Pointer[context.Context]
+}
+
+// SetSwitchLeaseAcquirer configures an ownership lease checked before any
+// profile-operation APDU is opened. Configure it before publishing the Manager.
+func (m *Manager) SetSwitchLeaseAcquirer(acquire func(SwitchOperation, string) (func(), error)) {
+	if m == nil {
+		return
+	}
+	m.acquireSwitchLease = acquire
+}
+
+func (m *Manager) holdSwitchLease(operation SwitchOperation, targetICCID string) (func(), error) {
+	if m.acquireSwitchLease == nil {
+		return func() {}, nil
+	}
+	release, err := m.acquireSwitchLease(operation, targetICCID)
+	if err != nil {
+		return nil, fmt.Errorf("eSIM 切卡设备归属已失效: %w", err)
+	}
+	if release == nil {
+		return nil, errors.New("eSIM 切卡设备归属租约未返回释放函数")
+	}
+	return release, nil
 }
 
 // ErrOperationInProgress 表示当前有写操作（下载/切换/删除）正在进行中
@@ -2677,6 +2701,12 @@ func (m *Manager) SwitchProfileWithResult(ctx context.Context, targetICCID strin
 			err,
 		)
 	}
+	releaseOwnership, err := m.holdSwitchLease(operation, targetICCID)
+	if err != nil {
+		switchFailureErr = err
+		return result, err
+	}
+	defer releaseOwnership()
 	m.drainSwitchSignals()
 
 	// 1. 查找 ICCID 所属的 eUICC
@@ -2840,6 +2870,12 @@ func (m *Manager) DisableProfile(ctx context.Context, targetICCID string, aidHex
 			err,
 		)
 	}
+	releaseOwnership, err := m.holdSwitchLease(operation, targetICCID)
+	if err != nil {
+		switchFailureErr = err
+		return err
+	}
+	defer releaseOwnership()
 
 	var targetAID []byte
 	if aidHex != "" {

@@ -134,6 +134,59 @@ func TestWebhookPayloadFormat(t *testing.T) {
 	}
 }
 
+func TestWebhookPayloadTemplateRendersServerChanBody(t *testing.T) {
+	var received map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	channel, err := NewWebhookChannel(config.WebhookConfig{
+		Enabled: true,
+		URLs:    []string{server.URL},
+		PayloadTemplate: `{
+  "title": {{title}},
+  "desp": {{message}},
+  "device": {{device_label}}
+}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = channel.SendWithContext(NotificationContext{
+		Event: "sms_received", Text: "验证码是 \"1234\"\n请勿泄露",
+		DeviceID: "wwan0", DeviceName: "主卡", Timestamp: time.Unix(1, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if received["desp"] != "验证码是 \"1234\"\n请勿泄露" || received["device"] != "主卡 (wwan0)" {
+		t.Fatalf("payload = %#v", received)
+	}
+	if received["title"] == "" {
+		t.Fatalf("title was empty: %#v", received)
+	}
+}
+
+func TestWebhookPayloadTemplateValidation(t *testing.T) {
+	templates := []string{
+		`{"title": {{unknown}}}`,
+		`[]`,
+		`{"title": "{{title}}"}`,
+		`{"title": {{title}}`,
+	}
+	for _, template := range templates {
+		t.Run(template, func(t *testing.T) {
+			if err := ValidateWebhookPayloadTemplate(template); err == nil {
+				t.Fatalf("template %q was accepted", template)
+			}
+		})
+	}
+}
+
 // TestWebhookRetryOn5xx 验证 5xx 错误触发重试
 func TestWebhookRetryOn5xx(t *testing.T) {
 	var callCount atomic.Int32

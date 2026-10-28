@@ -305,6 +305,25 @@ func withSwitchSnapshot(p *Pool, deviceID string, snapshot esimSwitchContext) {
 	p.switchMu.Unlock()
 }
 
+func TestHandleESIMSwitchAfterRejectsReplacedWorkerOwner(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	oldWorker := &Worker{ID: "dev-1", Config: config.DeviceConfig{ID: "dev-1"}}
+	p.assignWorkerGeneration(oldWorker)
+	p.workers[oldWorker.ID] = oldWorker
+	snapshot := p.captureESIMSwitchContext(oldWorker.ID, "target-iccid")
+	withSwitchSnapshot(p, oldWorker.ID, snapshot)
+
+	newWorker := &Worker{ID: oldWorker.ID, Config: config.DeviceConfig{ID: oldWorker.ID}}
+	p.assignWorkerGeneration(newWorker)
+	p.workers[newWorker.ID] = newWorker
+	p.handleESIMSwitchAfter(newWorker.ID, 0)
+
+	if generation := newWorker.state.Identity.Generation; generation != 0 {
+		t.Fatalf("replacement identity generation=%d, want 0", generation)
+	}
+}
+
 func currentSwitchSnapshotSwitchRestore(t *testing.T, p *Pool, deviceID string) (esimSwitchContext, bool) {
 	t.Helper()
 	p.switchMu.Lock()

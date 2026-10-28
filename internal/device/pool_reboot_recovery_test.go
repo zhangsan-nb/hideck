@@ -740,3 +740,14 @@ func TestManualRebootRecoveryDelaysSkipImmediateRound(t *testing.T) {
 		t.Fatalf("manual reboot delays should span >=30s total, got %v", total)
 	}
 }
+
+func TestScheduleModemRebootRecoveryForWorkerRejectsReplacement(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	oldWorker := &Worker{ID: "dev-at"}
+	replacement := &Worker{ID: oldWorker.ID}
+	p.workers[replacement.ID] = replacement
+	if p.ScheduleModemRebootRecoveryForWorker(oldWorker, "manual_reboot") {
+		t.Fatal("old worker scheduled recovery for its replacement")
+	}
+}

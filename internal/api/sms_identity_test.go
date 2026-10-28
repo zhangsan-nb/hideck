@@ -45,6 +45,11 @@ func TestSMSContactsUsesDatabaseBindingWhenWorkerIsOffline(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	policy := db.DefaultCardPolicy(iccid)
+	policy.LocalPhoneOverride = "+447911000404"
+	if err := db.UpsertCardPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
 
 	pool := device.NewPool(&config.Config{})
 	t.Cleanup(func() { _ = pool.Shutdown() })
@@ -65,6 +70,9 @@ func TestSMSContactsUsesDatabaseBindingWhenWorkerIsOffline(t *testing.T) {
 	}
 	if len(contacts) != 1 || contacts[0].ICCID != iccid || contacts[0].LastContent != "offline message" {
 		t.Fatalf("contacts=%+v", contacts)
+	}
+	if contacts[0].LocalPhone != "+447911000404" {
+		t.Fatalf("LocalPhone=%q, want manual card number", contacts[0].LocalPhone)
 	}
 }
 

@@ -555,7 +555,7 @@ func TestRegistrationExpiresPrefersOwnContact(t *testing.T) {
 	response := &sipResponse{Headers: map[string]string{
 		"Contact": "<sip:user@10.0.0.2>;expires=120", "Expires": "3600",
 	}}
-	if got, err := registrationExpires(response, "<sip:user@10.0.0.2>", time.Hour); err != nil || got != 120*time.Second {
+	if got, err := registrationExpires(response, "<sip:user@10.0.0.2>", time.Hour, false); err != nil || got != 120*time.Second {
 		t.Fatalf("registrationExpires = %s, %v, want 120s", got, err)
 	}
 }

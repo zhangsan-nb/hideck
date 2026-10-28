@@ -16,3 +16,8 @@ func currentSIMOwnership(w *Worker) simOwnership {
 	defer w.cacheMu.RUnlock()
 	return simOwnership{iccid: strings.TrimSpace(w.state.Identity.ICCID), generation: w.state.Identity.Generation}
 }
+
+// SIMIdentityGeneration identifies one concrete SIM ownership interval.
+func (w *Worker) SIMIdentityGeneration() uint64 {
+	return currentSIMOwnership(w).generation
+}

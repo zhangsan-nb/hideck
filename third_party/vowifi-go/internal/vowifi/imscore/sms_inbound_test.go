@@ -88,8 +88,50 @@ func TestInboundSMSDeliversEventAndSendsRPAck(t *testing.T) {
 	}
 }
 
-func TestInboundRPAckUsesInboundTCPPeer(t *testing.T) {
+// TS 33.203 7.1: the RP-ACK is a new UE request, so it leaves on the
+// registered flow even though the MESSAGE arrived on the P-CSCF's connection.
+func TestInboundRPAckUsesRegisteredFlow(t *testing.T) {
+	_, outbound, writes, readErr := dispatchInboundSMSOverPeer(t, false)
+	if response := waitForPeerSIPWrite(t, writes, readErr); !strings.HasPrefix(response, "SIP/2.0 200") {
+		t.Fatalf("peer response = %q", response)
+	}
+	select {
+	case request := <-outbound:
+		if !strings.HasPrefix(request, "MESSAGE sip:+447802002606@ims.example SIP/2.0") {
+			t.Fatalf("registered RP-ACK = %q", strings.SplitN(request, "\r\n", 2)[0])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RP-ACK did not use the registered flow")
+	}
+	select {
+	case request := <-writes:
+		t.Fatalf("RP-ACK also used the peer connection: %q", request)
+	default:
+	}
+}
+
+func TestInboundRPAckPresetUsesInboundTCPPeer(t *testing.T) {
+	_, outbound, writes, readErr := dispatchInboundSMSOverPeer(t, true)
+	if response := waitForPeerSIPWrite(t, writes, readErr); !strings.HasPrefix(response, "SIP/2.0 200") {
+		t.Fatalf("peer response = %q", response)
+	}
+	request := waitForPeerSIPWrite(t, writes, readErr)
+	if !strings.HasPrefix(request, "MESSAGE sip:+447802002606@ims.example SIP/2.0") {
+		t.Fatalf("peer RP-ACK = %q", strings.SplitN(request, "\r\n", 2)[0])
+	}
+	select {
+	case request := <-outbound:
+		t.Fatalf("RP-ACK also used the registered outbound flow: %q", request)
+	default:
+	}
+}
+
+func dispatchInboundSMSOverPeer(t *testing.T, portUS bool) (*Service, <-chan string, <-chan string, <-chan error) {
+	t.Helper()
 	service, _, outbound := newInboundSMSTestService(t)
+	service.mu.Lock()
+	service.cfg.IMSRegisterTemplate.RPReportOverPortUS = portUS
+	service.mu.Unlock()
 	serviceConn, networkConn := net.Pipe()
 	t.Cleanup(func() { _ = serviceConn.Close() })
 	t.Cleanup(func() { _ = networkConn.Close() })
@@ -107,20 +149,7 @@ func TestInboundRPAckUsesInboundTCPPeer(t *testing.T) {
 	); err != nil {
 		t.Fatalf("dispatch inbound SMS: %v", err)
 	}
-
-	response := waitForPeerSIPWrite(t, writes, readErr)
-	if !strings.HasPrefix(response, "SIP/2.0 200") {
-		t.Fatalf("peer response = %q", response)
-	}
-	request := waitForPeerSIPWrite(t, writes, readErr)
-	if !strings.HasPrefix(request, "MESSAGE sip:+447802002606@ims.example SIP/2.0") {
-		t.Fatalf("peer RP-ACK = %q", strings.SplitN(request, "\r\n", 2)[0])
-	}
-	select {
-	case request := <-outbound:
-		t.Fatalf("RP-ACK also used the registered outbound flow: %q", request)
-	default:
-	}
+	return service, outbound, writes, readErr
 }
 
 func (capture peerSMSCapture) run() {

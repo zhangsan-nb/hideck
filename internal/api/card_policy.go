@@ -73,6 +73,10 @@ func (s *Server) patchCardPolicyForDevice(deviceID string, mutate func(*db.CardP
 }
 
 func (s *Server) handleGetCardPolicy(c *gin.Context) {
+	s.useGetCardPolicy(c)
+}
+
+func (s *Server) useGetCardPolicy(c businessContext) {
 	iccid := c.Param("iccid")
 	pol, err := s.cardPolicyStore().Get(iccid)
 	if errors.Is(err, db.ErrCardPolicyNotFound) {
@@ -88,6 +92,10 @@ func (s *Server) handleGetCardPolicy(c *gin.Context) {
 }
 
 func (s *Server) handleListCardPolicies(c *gin.Context) {
+	s.useListCardPolicies(c)
+}
+
+func (s *Server) useListCardPolicies(c businessContext) {
 	var out []db.CardPolicy
 	if db.DB != nil {
 		if err := db.DB.Order("updated_at desc").Find(&out).Error; err != nil {
@@ -98,18 +106,31 @@ func (s *Server) handleListCardPolicies(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"policies": out})
 }
 
+type cardPolicyPatchRequest struct {
+	NetworkEnabled        *bool   `json:"network_enabled"`
+	VoWiFiEnabled         *bool   `json:"vowifi_enabled"`
+	AirplaneEnabled       *bool   `json:"airplane_enabled"`
+	IPVersion             *string `json:"ip_version"`
+	APN                   *string `json:"apn"`
+	PhoneMode             *string `json:"phone_mode"`
+	DataStrategy          *string `json:"data_strategy"`
+	VowifiUpstreamProxyID *string `json:"vowifi_upstream_proxy_id"`
+	LocalPhoneOverride    *string `json:"local_phone_override"`
+}
+
 func (s *Server) handlePutCardPolicy(c *gin.Context) {
-	iccid := c.Param("iccid")
-	var req struct {
-		NetworkEnabled        *bool   `json:"network_enabled"`
-		VoWiFiEnabled         *bool   `json:"vowifi_enabled"`
-		AirplaneEnabled       *bool   `json:"airplane_enabled"`
-		IPVersion             *string `json:"ip_version"`
-		APN                   *string `json:"apn"`
-		PhoneMode             *string `json:"phone_mode"`
-		DataStrategy          *string `json:"data_strategy"`
-		VowifiUpstreamProxyID *string `json:"vowifi_upstream_proxy_id"`
+	s.usePutCardPolicy(c)
+}
+
+func (s *Server) usePutCardPolicy(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
 	}
+	defer releaseOperation()
+
+	iccid := c.Param("iccid")
+	var req cardPolicyPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -124,7 +145,7 @@ func (s *Server) handlePutCardPolicy(c *gin.Context) {
 	}
 	previousProxyID := pol.VowifiUpstreamProxyID
 
-	class, classifyErr := s.classifyLebaraUKForICCID(c.Request.Context(), iccid)
+	class, classifyErr := s.classifyLebaraUKForICCID(businessRequestContext(c), iccid)
 	if classifyErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "识别 Lebara UK 射频策略失败: " + classifyErr.Error()})
 		return
@@ -179,6 +200,14 @@ func (s *Server) handlePutCardPolicy(c *gin.Context) {
 			return
 		}
 		pol.VowifiUpstreamProxyID = id
+	}
+	if req.LocalPhoneOverride != nil {
+		phone, err := db.NormalizeManualPhoneNumber(*req.LocalPhoneOverride)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		pol.LocalPhoneOverride = phone
 	}
 	pol.Source = "user"
 
@@ -250,7 +279,7 @@ func normalizeCardPolicyIPVersion(value string) (string, error) {
 	}
 }
 
-func writeCardPolicyMutationError(c *gin.Context, err error) {
+func writeCardPolicyMutationError(c businessContext, err error) {
 	status := http.StatusInternalServerError
 	if errors.Is(err, errCardPolicyIdentityUnavailable) {
 		status = http.StatusConflict

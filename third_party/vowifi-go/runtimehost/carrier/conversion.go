@@ -22,6 +22,8 @@ func RegisterTemplateFromInternal(value policy.IMSRegisterTemplate) IMSRegisterT
 		SecurityClientIncludesServerParams:  value.SecurityClientIncludesServerParams,
 		SecurityClientMechanisms:            mechanismsFromInternal(value.SecurityClientMechanisms),
 		StrictSecurityServerOffer:           value.StrictSecurityServerOffer,
+		AcceptRegisterContactWithoutUser:    value.AcceptRegisterContactWithoutUser,
+		RPReportOverPortUS:                  value.RPReportOverPortUS,
 		EnableInitialRejectFallback:         value.EnableInitialRejectFallback,
 		FallbackIncludesServerParamsInSecCl: value.FallbackIncludesServerParamsInSecCl,
 		RegisterPolicy:                      registerPolicyFromInternal(value.RegisterPolicy),
@@ -75,6 +77,7 @@ func copyCarrierIKEFromInternal(result *EffectiveCarrierConfig, value policy.Eff
 	result.IKERekeyIntervalSeconds = value.IKERekeyIntervalSeconds
 	result.WithholdDeviceIdentity = value.WithholdDeviceIdentity
 	result.KeepChildSAOnRekeyDecline = value.KeepChildSAOnRekeyDecline
+	result.DeferPeerChildRekeySwitch = value.DeferPeerChildRekeySwitch
 }
 
 func copyCarrierIMSFromInternal(result *EffectiveCarrierConfig, value policy.EffectiveCarrierConfig) {

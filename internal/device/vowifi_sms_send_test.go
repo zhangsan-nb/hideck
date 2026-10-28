@@ -151,11 +151,12 @@ func TestShouldRouteSMSViaVoWiFiDuringConfiguredRecovery(t *testing.T) {
 }
 
 func TestSendRoutedSMSDoesNotGuessCountryCodeForEitherLeg(t *testing.T) {
+	initDevicePhoneNumberTestDB(t)
 	pool := NewPool(&config.Config{})
 	defer pool.cancel()
 	worker := &Worker{ID: "wwan0", Config: config.DeviceConfig{VoWiFiEnabled: true, PhoneMode: "wifi"}}
 	worker.state.Identity.NativeMCC = "460"
-	worker.state.Identity.Ready = true
+	setWorkerSMSIdentity(worker, SMSIdentity{ICCID: "8944000000000000401", IMSI: "460000000000401"})
 	pool.workers[worker.ID] = worker
 	var imsTo, csTo string
 	pool.SetRoutedSMSTestSenders(
@@ -175,9 +176,11 @@ func TestSendRoutedSMSDoesNotGuessCountryCodeForEitherLeg(t *testing.T) {
 }
 
 func TestSendRoutedSMSKeepsExplicitInternationalDestination(t *testing.T) {
+	initDevicePhoneNumberTestDB(t)
 	pool := NewPool(&config.Config{})
 	defer pool.cancel()
 	worker := &Worker{ID: "wwan0", Config: config.DeviceConfig{VoWiFiEnabled: true, PhoneMode: "wifi"}}
+	setWorkerSMSIdentity(worker, SMSIdentity{ICCID: "8944000000000000402", IMSI: "460000000000402"})
 	pool.workers[worker.ID] = worker
 	var sentTo string
 	pool.SetRoutedSMSTestSenders(func(_ context.Context, _, to, _ string, _ smscodec.SubmitOptions) (messaging.SendOutcome, error) {
@@ -187,6 +190,45 @@ func TestSendRoutedSMSKeepsExplicitInternationalDestination(t *testing.T) {
 	result, err := pool.SendRoutedSMS(context.Background(), worker, " +8613123456789 ", "hello", smscodec.SubmitOptions{})
 	if err != nil || sentTo != "+8613123456789" || result.Destination != sentTo {
 		t.Fatalf("result=%+v sentTo=%q err=%v", result, sentTo, err)
+	}
+}
+
+func TestSendRoutedSMSReturnsIdentityCapturedBeforeSend(t *testing.T) {
+	initDevicePhoneNumberTestDB(t)
+	pool := NewPool(&config.Config{})
+	defer pool.cancel()
+	worker := &Worker{ID: "wwan0", Config: config.DeviceConfig{VoWiFiEnabled: true, PhoneMode: "wifi"}}
+	setWorkerSMSIdentity(worker, SMSIdentity{ICCID: "8944000000000000111", IMSI: "234150000000111"})
+	pool.workers[worker.ID] = worker
+	pool.SetRoutedSMSTestSenders(func(_ context.Context, _, _, _ string, _ smscodec.SubmitOptions) (messaging.SendOutcome, error) {
+		setWorkerSMSIdentity(worker, SMSIdentity{ICCID: "8944000000000000222", IMSI: "234150000000222"})
+		return messaging.SendOutcome{}, errors.New("send failed")
+	}, nil)
+
+	result, err := pool.SendRoutedSMS(context.Background(), worker, "+44123456789", "hello", smscodec.SubmitOptions{})
+	if err == nil {
+		t.Fatal("SendRoutedSMS() unexpectedly succeeded")
+	}
+	if !result.IdentityRead || result.Identity.ICCID != "8944000000000000111" || result.Identity.IMSI != "234150000000111" {
+		t.Fatalf("captured identity=%+v read=%t", result.Identity, result.IdentityRead)
+	}
+}
+
+func TestSendRoutedSMSStopsWhenIdentityCannotBeResolved(t *testing.T) {
+	initDevicePhoneNumberTestDB(t)
+	pool := NewPool(&config.Config{})
+	defer pool.cancel()
+	worker := &Worker{ID: "wwan0", Config: config.DeviceConfig{VoWiFiEnabled: true, PhoneMode: "wifi"}}
+	pool.workers[worker.ID] = worker
+	called := false
+	pool.SetRoutedSMSTestSenders(func(context.Context, string, string, string, smscodec.SubmitOptions) (messaging.SendOutcome, error) {
+		called = true
+		return messaging.SendOutcome{}, nil
+	}, nil)
+
+	result, err := pool.SendRoutedSMS(context.Background(), worker, "+44123456789", "hello", smscodec.SubmitOptions{})
+	if err == nil || result.IdentityRead || called {
+		t.Fatalf("result=%+v err=%v called=%t", result, err, called)
 	}
 }
 

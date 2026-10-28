@@ -2,6 +2,8 @@ package imscore
 
 import (
 	"errors"
+	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -11,8 +13,10 @@ import (
 
 var errRegisterContactMissing = errors.New("imscore: REGISTER response does not contain the requested Contact binding")
 
-func registrationExpires(response *sipResponse, requestContact string, configured time.Duration) (time.Duration, error) {
-	contact := matchingRegisterContact(response, requestContact)
+func registrationExpires(
+	response *sipResponse, requestContact string, configured time.Duration, acceptWithoutUser bool,
+) (time.Duration, error) {
+	contact := matchingRegisterContact(response, requestContact, acceptWithoutUser)
 	if contact == "" {
 		return 0, errRegisterContactMissing
 	}
@@ -41,11 +45,23 @@ func parseRegistrationLifetime(value string) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
-func matchingRegisterContact(response *sipResponse, requestContact string) string {
+func matchingRegisterContact(response *sipResponse, requestContact string, acceptWithoutUser bool) string {
 	var own sip.Uri
 	if _, err := sip.ParseAddressValue(requestContact, &own, nil); err != nil || own.Host == "" {
 		return ""
 	}
+	if contact := findRegisterContact(response, own); contact != "" || !acceptWithoutUser || own.User == "" {
+		return contact
+	}
+	// RFC 3261 19.1.4 says a URI without a user part does not match ours.
+	// 2degrees NZ still answers our REGISTER with only the userless form of
+	// our address. The inner IP and protected port are unique to this flow,
+	// so the preset opts in to taking that form as our binding.
+	own.User, own.Password = "", ""
+	return findRegisterContact(response, own)
+}
+
+func findRegisterContact(response *sipResponse, own sip.Uri) string {
 	for _, header := range response.HeaderValues("Contact") {
 		for _, contact := range splitQuotedSIPHeaderValues(header) {
 			var candidate sip.Uri
@@ -64,7 +80,7 @@ func matchingRegisterContact(response *sipResponse, requestContact string) strin
 // In particular, a shared instance ID alone does not identify the current flow.
 func sameRegisterContactURI(left, right sip.Uri) bool {
 	if !strings.EqualFold(left.Scheme, right.Scheme) ||
-		!strings.EqualFold(left.Host, right.Host) || left.Port != right.Port ||
+		!sameRegisterContactHost(left.Host, right.Host) || left.Port != right.Port ||
 		registerURIUnescape(left.User) != registerURIUnescape(right.User) ||
 		registerURIUnescape(left.Password) != registerURIUnescape(right.Password) {
 		return false
@@ -119,4 +135,61 @@ func registerURIUnescape(value string) string {
 		result.WriteByte(value[i])
 	}
 	return result.String()
+}
+
+// redactContactUser keeps only what Contact matching compares and cannot
+// carry an identity: the SIP host, port and transport. tel: URIs, user parts,
+// other URI parameters and headers can carry the number, IMSI or IMEI.
+func redactContactUser(contact string) string {
+	var uri sip.Uri
+	if _, err := sip.ParseAddressValue(contact, &uri, nil); err != nil {
+		return "unparsable"
+	}
+	scheme := strings.ToLower(uri.Scheme)
+	if scheme != "sip" && scheme != "sips" {
+		return scheme + ":redacted"
+	}
+	var out strings.Builder
+	out.WriteString(scheme + ":")
+	if uri.User != "" {
+		out.WriteString("redacted@")
+	}
+	out.WriteString(uri.Host)
+	if uri.Port > 0 {
+		out.WriteString(":" + strconv.Itoa(uri.Port))
+	}
+	if transport, ok := registerURIParam(uri.UriParams, "transport"); ok {
+		out.WriteString(";transport=" + transport)
+	}
+	return out.String()
+}
+
+func redactedResponseContacts(response *sipResponse) []string {
+	var contacts []string
+	for _, header := range response.HeaderValues("Contact") {
+		for _, contact := range splitQuotedSIPHeaderValues(header) {
+			contacts = append(contacts, redactContactUser(contact))
+		}
+	}
+	return contacts
+}
+
+func sipHeaderNames(response *sipResponse) []string {
+	names := make([]string, 0, len(response.Headers))
+	for name := range response.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RFC 5954 4.1: IPv6 references compare as addresses, so "1:0:2d13" and
+// "1::2d13" are the same host.
+func sameRegisterContactHost(left, right string) bool {
+	if strings.EqualFold(left, right) {
+		return true
+	}
+	leftIP := net.ParseIP(strings.Trim(left, "[]"))
+	rightIP := net.ParseIP(strings.Trim(right, "[]"))
+	return leftIP != nil && rightIP != nil && leftIP.Equal(rightIP)
 }

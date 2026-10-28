@@ -920,6 +920,17 @@ func (c *Client) SendRequest(ctx context.Context, service uint8, clientID uint8,
 		return nil, err
 	}
 
+	// Keep the device gate until the reply or error, not only until the write.
+	releaseGate, err := c.acquireCompatRequestGate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if releaseGate != nil {
+			releaseGate()
+		}
+	}()
+
 	// Allocate transaction ID / 分配事务ID
 	var txID uint16
 	if service == ServiceControl {
@@ -950,10 +961,6 @@ func (c *Client) SendRequest(ctx context.Context, service uint8, clientID uint8,
 	c.transactions[key] = entry
 	c.mu.Unlock()
 
-	defer func() {
-		c.completeTransaction(key, entry, err)
-	}()
-
 	// Build packet / 构建数据包
 	p := Packet{
 		ServiceType:   service,
@@ -967,12 +974,25 @@ func (c *Client) SendRequest(ctx context.Context, service uint8, clientID uint8,
 		data:   p.Marshal(),
 		result: make(chan error, 1),
 	}
+	queued, writeFinished := false, false
+	defer func() {
+		if releaseGate != nil && queued && err != nil {
+			// Returning to the caller does not cancel the physical QMI request.
+			// Transfer ownership so another request cannot overtake its reply.
+			release := releaseGate
+			releaseGate = nil
+			go c.drainCompatRequest(key, entry, writeReq, writeFinished, release, err)
+			return
+		}
+		c.completeTransaction(key, entry, err)
+	}()
 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	select {
 	case c.writeCh <- writeReq:
+		queued = true
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-c.closeCh:
@@ -981,6 +1001,7 @@ func (c *Client) SendRequest(ctx context.Context, service uint8, clientID uint8,
 
 	select {
 	case err := <-writeReq.result:
+		writeFinished = true
 		if err != nil {
 			return nil, err
 		}

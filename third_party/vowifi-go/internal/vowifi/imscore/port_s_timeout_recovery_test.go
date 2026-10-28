@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -76,6 +77,25 @@ func TestPortSTimeoutFailoverWaitsForValidationAndBackoff(t *testing.T) {
 	entry := s.registrarPenalties.states(time.Now())[s.registrar]
 	if entry.reason != portSTransportTimeoutFailure || entry.deprioritizedUntil.Before(time.Now().Add(29*time.Minute)) {
 		t.Fatalf("timeout penalty = %+v", entry)
+	}
+}
+
+func TestFailedPortSTimeoutValidationStopsAwaitingPeer(t *testing.T) {
+	s := newPortSTimeoutTestService(t)
+	registration, registrationPeer := net.Pipe()
+	t.Cleanup(func() { registration.Close(); registrationPeer.Close() })
+	s.mu.Lock()
+	s.registrationTCP = registration
+	s.registrationTCPProtected = true
+	s.mu.Unlock()
+	var reasons []string
+	s.SetOnSMSReadinessChanged(func(state SMSReadiness) { reasons = append(reasons, state.Reason) })
+	failPortSTimeoutValidation(t, s)
+	if !slices.Contains(reasons, smsReadyReasonPortSAwaitingPeer) {
+		t.Fatalf("published reasons = %q, want the timeout reported as awaiting the peer first", reasons)
+	}
+	if last := reasons[len(reasons)-1]; last != smsReadyReasonReceiverNotReady {
+		t.Fatalf("reason after failed validation = %q, want %q", last, smsReadyReasonReceiverNotReady)
 	}
 }
 

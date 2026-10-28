@@ -50,6 +50,7 @@ func (s *Session) handleLegacyFastReauthentication(packet eapaka.Packet, raw []b
 	if err := verifyLegacyReauthenticationMAC(packet.Type, s.fastReauthCtx.KAut, raw); err != nil {
 		return nil, err
 	}
+	s.deviceIdentityEAPVerified = true
 	counterTooSmall := counter < s.fastReauthCtx.Counter
 	responseData, err := s.fastReauthCtx.BuildReauthResponse(nonce, counter, counterTooSmall)
 	if err != nil {

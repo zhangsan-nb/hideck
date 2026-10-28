@@ -172,6 +172,56 @@ func TestSMSReadyClearsRecoveredFailureDetails(t *testing.T) {
 	}
 }
 
+func TestLateSMSReadinessAfterInterruptionKeepsSMSUnavailable(t *testing.T) {
+	for _, down := range []struct{ event, phase string }{
+		{"interrupted", "interrupted"}, {"retrying", "retrying"}, {"terminal_error", "error"},
+		{"stopped", "stopped"}, {"", "restarting"},
+	} {
+		t.Run(down.phase, func(t *testing.T) {
+			instance := &Instance{}
+			instance.setState(State{DeviceID: "wwan0", Phase: "sms_ready", IMSReady: true, SMSReady: true,
+				SMSHealthReady: true, SMSMOReady: true})
+			observer := &instanceObserver{inst: instance, deviceID: "wwan0"}
+			var published []Event
+			instance.AddObserver(ObserverFunc(func(_ context.Context, event Event) { published = append(published, event) }))
+			request := runtimecore.RuntimeStartRequest{}
+			chainSMSReadinessHook(&request, observer)
+			chainSMSReadyHook(&request, observer)
+			if down.event == "" {
+				instance.setTunnelReauthenticationRequired(errors.New("fresh runtime required"))
+			} else {
+				observer.OnRuntimeEvent(context.Background(), runtimecore.RuntimeEvent[*runtimecore.SessionResult]{
+					Kind: down.event, Reason: "swu_session_down",
+				})
+			}
+			if got := instance.State().Phase; got != down.phase {
+				t.Fatalf("phase = %q, want %q", got, down.phase)
+			}
+
+			// The IMS service of the old runtime reports ready once more, as
+			// runtimecore delivers it: the snapshot first, then sms_ready.
+			request.Hooks.OnSMSReadinessChanged(context.Background(), imscore.SMSReadiness{
+				Registered: true, ProfileReady: true, TransportReady: true, ReceiverReady: true,
+				SMSCPresent: true, Ready: true, MOReady: true, HealthReady: true, Reason: "IMS SMS receiver ready",
+			})
+			request.Hooks.OnSMSReady(context.Background())
+
+			state := instance.State()
+			if state.IMSReady || state.SMSReady || state.SMSHealthReady || state.SMSMOReady || state.Phase == "sms_ready" {
+				t.Fatalf("state after a late SMS readiness = %+v", state)
+			}
+			if len(published) != 3 || published[1].Kind != "state" || published[2].Kind != "sms_ready" {
+				t.Fatalf("published %d events, want %s, state, sms_ready", len(published), down.phase)
+			}
+			for _, event := range published[1:] {
+				if event.State.SMSReady || event.State.SMSHealthReady || event.State.SMSMOReady {
+					t.Fatalf("published %s with SMS readiness: %+v", event.Kind, event.State)
+				}
+			}
+		})
+	}
+}
+
 func TestCurrentSMSReadinessClearsRecoveredFailureDetails(t *testing.T) {
 	instance := &Instance{}
 	instance.setState(State{

@@ -262,8 +262,8 @@ func (s *Session) decapsulateOuterESP(esp []byte) ([]byte, uint32, error) {
 	if inbound == nil && s.espInboundSA != nil && s.espInboundSA.SPI == spi {
 		inbound = s.espInboundSA
 	}
-	s.childSAMu.RUnlock()
 	if inbound == nil {
+		s.childSAMu.RUnlock()
 		snapshot := s.captureChildSASnapshot()
 		return nil, spi, fmt.Errorf(
 			"%w: spi=%08x current_local=%08x current_remote=%08x known_inbound=%s",
@@ -271,12 +271,18 @@ func (s *Session) decapsulateOuterESP(esp []byte) ([]byte, uint32, error) {
 			snapshot.inboundSPIText(),
 		)
 	}
+	// Hold the lock through authentication: a replaced or deleted SA is
+	// removed under the write lock and wiped after it.
 	inner, err := ipsec.Decapsulate(esp, inbound)
+	s.childSAMu.RUnlock()
 	if err != nil {
 		return nil, spi, fmt.Errorf("decapsulate ESP packet: %w", err)
 	}
 	// Authenticated ESP proves the peer is alive even if selectors reject it.
 	s.markInboundActivity()
+	if pending := s.pendingRekeySPI.Load(); pending != 0 && pending == spi {
+		s.adoptPendingPeerRekey("valid ESP on the new SA", spi)
+	}
 	if !matchInboundSelectors(inner, s.childTSi, s.childTSr) {
 		return nil, spi, errors.New("swu: inbound inner packet is outside negotiated traffic selectors")
 	}
@@ -299,6 +305,9 @@ func (s *Session) stopDataPlane() error {
 	}
 	s.dataPlaneWG.Wait()
 	s.childSAMu.Lock()
+	if pending := s.takePendingPeerRekeyLocked(nil); pending != nil {
+		wipeChildSARuntime(pending.runtime)
+	}
 	wipeESPAssociation(s.espOutboundSA)
 	for _, association := range s.espInboundSAs {
 		wipeESPAssociation(association)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/iniwex5/vowifi-go/runtimehost/voicehost"
 )
@@ -17,7 +18,11 @@ func (s *Service) startMixedRecording(call *activeCall, media *MediaSession) {
 		var recorder *mixedRecorder
 		var recorderErr error
 		if pathErr == nil {
-			recorder, recorderErr = newMixedRecorder(path)
+			if call.autoAnswered {
+				recorder, recorderErr = newIncomingRecorder(path)
+			} else {
+				recorder, recorderErr = newMixedRecorder(path)
+			}
 		}
 		recordingErr := errors.Join(pathErr, recorderErr)
 		s.mu.Lock()
@@ -136,6 +141,7 @@ func (s *Service) finalizeRecording(event voicehost.CallEvent) {
 	)
 	call.view.Codec, call.view.RecordingError = call.record.Codec, call.record.RecordingError
 	record := call.record
+	autoAnswered := call.autoAnswered
 	delete(s.calls, event.CallID)
 	s.mu.Unlock()
 	s.persist(record)
@@ -146,11 +152,31 @@ func (s *Service) finalizeRecording(event voicehost.CallEvent) {
 		kind = "recording_unavailable"
 	}
 	s.publish(kind, call)
+	if autoAnswered && record.RecordingName != "" {
+		s.notifyAutoAnswerRecording(record)
+	}
 	call.finalizedOnce.Do(func() {
 		if call.finalizedDone != nil {
 			close(call.finalizedDone)
 		}
 	})
+}
+
+func (s *Service) notifyAutoAnswerRecording(record CallRecord) {
+	notifier, ok := s.notifier.(autoAnswerRecordingNotifier)
+	if !ok {
+		return
+	}
+	at := time.Now()
+	if record.EndedAt != nil {
+		at = *record.EndedAt
+	}
+	path := filepath.Join(s.recordingDir, record.RecordingName)
+	notification := AutoAnswerRecordingNotification{
+		DeviceID: record.DeviceID, Peer: record.Peer, RecordingPath: path,
+		RecordingName: record.RecordingName, At: at,
+	}
+	go notifier.NotifyAutoAnswerRecording(notification)
 }
 
 func (s *Service) publishMP3(audioPath string) (string, string) {

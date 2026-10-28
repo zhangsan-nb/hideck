@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/yibaiba/hideck/internal/config"
@@ -37,7 +38,13 @@ func TestSystemSettingsHandlerPersistsAndAppliesOpenWRTMapping(t *testing.T) {
 	}
 	mapper := &settingsMapperStub{}
 	pool := device.NewPoolWithDynamicInterfaceMapper(&config.Config{}, mapper)
-	server := &Server{pool: pool, fullCfg: &config.Config{}, configPath: path}
+	autoAnswer := config.AutoAnswerConfig{
+		AudioFile: "greeting.wav",
+		Devices:   map[string]config.AutoAnswerDeviceConfig{"wwan0": {Enabled: true, DelaySeconds: 45}},
+	}
+	server := &Server{
+		pool: pool, fullCfg: &config.Config{System: config.SystemConfig{AutoAnswer: autoAnswer}}, configPath: path,
+	}
 
 	response := updateSystemSettings(t, server, true)
 	if response.Code != http.StatusOK {
@@ -49,6 +56,9 @@ func TestSystemSettingsHandlerPersistsAndAppliesOpenWRTMapping(t *testing.T) {
 	}
 	if !mapper.enabled || !loaded.System.OpenWRTDynamicInterfaces || !server.fullCfg.System.OpenWRTDynamicInterfaces {
 		t.Fatalf("mapper=%v loaded=%v runtime=%v", mapper.enabled, loaded.System, server.fullCfg.System)
+	}
+	if !reflect.DeepEqual(loaded.System.AutoAnswer, autoAnswer) || !reflect.DeepEqual(server.fullCfg.System.AutoAnswer, autoAnswer) {
+		t.Fatalf("auto answer was overwritten: persisted=%+v runtime=%+v want=%+v", loaded.System.AutoAnswer, server.fullCfg.System.AutoAnswer, autoAnswer)
 	}
 }
 
@@ -107,6 +117,6 @@ func updateSystemSettings(t *testing.T, server *Server, enabled bool) *httptest.
 }
 
 func writeSystemSettingsFixture(path string) error {
-	data := []byte("system:\n  openwrt_dynamic_interfaces: false\ndevices: []\n")
+	data := []byte("system:\n  openwrt_dynamic_interfaces: false\n  auto_answer:\n    audio_file: greeting.wav\n    devices:\n      wwan0:\n        enabled: true\n        delay_seconds: 45\ndevices: []\n")
 	return os.WriteFile(path, data, 0o600)
 }

@@ -29,8 +29,8 @@ func normalizeUpstreamProxyPayload(existing *db.UpstreamProxy, req db.UpstreamPr
 	return out
 }
 
-func probeUpstreamProxyConfig(c *gin.Context, proxy db.UpstreamProxy) (upstreamproxy.ProbeResult, error) {
-	return upstreamproxy.ProbeDiagnostics(c.Request.Context(), upstreamproxy.ProbeConfig{
+func probeUpstreamProxyConfig(c businessContext, proxy db.UpstreamProxy) (upstreamproxy.ProbeResult, error) {
+	return upstreamproxy.ProbeDiagnostics(businessRequestContext(c), upstreamproxy.ProbeConfig{
 		ProxyAddr: proxy.Addr,
 		Username:  proxy.Username,
 		Password:  proxy.Password,
@@ -59,6 +59,10 @@ func upstreamProxyProbeBlocksPersistence(result upstreamproxy.ProbeResult, probe
 
 // handleListUpstreamProxies 获取所有前置代理实例
 func (s *Server) handleListUpstreamProxies(c *gin.Context) {
+	s.useListUpstreamProxies(c)
+}
+
+func (s *Server) useListUpstreamProxies(c businessContext) {
 	proxies, err := db.ListUpstreamProxies()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
@@ -73,6 +77,16 @@ func (s *Server) handleListUpstreamProxies(c *gin.Context) {
 
 // handleCreateUpstreamProxy 创建前置代理实例
 func (s *Server) handleCreateUpstreamProxy(c *gin.Context) {
+	s.useCreateUpstreamProxy(c)
+}
+
+func (s *Server) useCreateUpstreamProxy(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req db.UpstreamProxy
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "参数解析失败: " + err.Error()})
@@ -110,6 +124,16 @@ func (s *Server) handleCreateUpstreamProxy(c *gin.Context) {
 
 // handleUpdateUpstreamProxy 更新前置代理实例
 func (s *Server) handleUpdateUpstreamProxy(c *gin.Context) {
+	s.useUpdateUpstreamProxy(c)
+}
+
+func (s *Server) useUpdateUpstreamProxy(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := upstreamProxyIDParam(c)
 	var req db.UpstreamProxy
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -154,6 +178,16 @@ func (s *Server) handleUpdateUpstreamProxy(c *gin.Context) {
 
 // handleDeleteUpstreamProxy 删除前置代理实例
 func (s *Server) handleDeleteUpstreamProxy(c *gin.Context) {
+	s.useDeleteUpstreamProxy(c)
+}
+
+func (s *Server) useDeleteUpstreamProxy(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := upstreamProxyIDParam(c)
 	if err := db.DeleteUpstreamProxy(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
@@ -164,6 +198,16 @@ func (s *Server) handleDeleteUpstreamProxy(c *gin.Context) {
 
 // handleProbeUpstreamProxy 分别探测 SOCKS5/DNS UDP 和经代理访问的 HTTPS 出口。
 func (s *Server) handleProbeUpstreamProxy(c *gin.Context) {
+	s.useProbeUpstreamProxy(c)
+}
+
+func (s *Server) useProbeUpstreamProxy(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := upstreamProxyIDParam(c)
 	proxy, err := db.GetUpstreamProxyByID(id)
 	if err != nil {
@@ -215,6 +259,10 @@ func buildUpstreamProxyCountryRuleResponse(rule db.UpstreamProxyCountryRule) ups
 }
 
 func (s *Server) handleListUpstreamProxyCountries(c *gin.Context) {
+	s.useListUpstreamProxyCountries(c)
+}
+
+func (s *Server) useListUpstreamProxyCountries(c businessContext) {
 	if !upstreamproxy.CountryTableReady() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "mcc_mnc_table_unavailable"})
 		return
@@ -223,6 +271,10 @@ func (s *Server) handleListUpstreamProxyCountries(c *gin.Context) {
 }
 
 func (s *Server) handleListUpstreamProxyCountryRules(c *gin.Context) {
+	s.useListUpstreamProxyCountryRules(c)
+}
+
+func (s *Server) useListUpstreamProxyCountryRules(c businessContext) {
 	rules, err := db.ListUpstreamProxyCountryRules()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": err.Error()})
@@ -236,6 +288,16 @@ func (s *Server) handleListUpstreamProxyCountryRules(c *gin.Context) {
 }
 
 func (s *Server) handleUpsertUpstreamProxyCountryRule(c *gin.Context) {
+	s.useUpsertUpstreamProxyCountryRule(c)
+}
+
+func (s *Server) useUpsertUpstreamProxyCountryRule(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	if !upstreamproxy.CountryTableReady() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "mcc_mnc_table_unavailable"})
 		return
@@ -277,6 +339,16 @@ func (s *Server) handleUpsertUpstreamProxyCountryRule(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteUpstreamProxyCountryRule(c *gin.Context) {
+	s.useDeleteUpstreamProxyCountryRule(c)
+}
+
+func (s *Server) useDeleteUpstreamProxyCountryRule(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	countryCode := upstreamproxy.NormalizeCountryCode(countryCodeParam(c))
 	proxyID := strings.TrimSpace(c.Query("upstream_proxy_id"))
 	if err := db.DeleteUpstreamProxyCountryRule(countryCode, proxyID); err != nil {

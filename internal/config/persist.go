@@ -64,13 +64,14 @@ func UpdateNotificationInFile(path string, notifications NotificationConfigs) er
 	}
 
 	root["webhook"] = map[string]any{
-		"enabled":       notifications.Webhook.Enabled,
-		"urls":          notifications.Webhook.URLs,
-		"secret":        notifications.Webhook.Secret,
-		"timeout_ms":    notifications.Webhook.TimeoutMs,
-		"retry_max":     notifications.Webhook.RetryMax,
-		"text_template": notifications.Webhook.TextTemplate,
-		"headers":       notifications.Webhook.Headers,
+		"enabled":          notifications.Webhook.Enabled,
+		"urls":             notifications.Webhook.URLs,
+		"secret":           notifications.Webhook.Secret,
+		"timeout_ms":       notifications.Webhook.TimeoutMs,
+		"retry_max":        notifications.Webhook.RetryMax,
+		"text_template":    notifications.Webhook.TextTemplate,
+		"payload_template": notifications.Webhook.PayloadTemplate,
+		"headers":          notifications.Webhook.Headers,
 	}
 
 	root["bark"] = map[string]any{

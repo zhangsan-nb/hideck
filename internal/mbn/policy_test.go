@@ -60,7 +60,10 @@ func TestSessionChoiceDoesNotSurviveSIMGenerationChange(t *testing.T) {
 func TestSuccessfulTrialKeepsProfileWithoutCreatingPolicy(t *testing.T) {
 	s, f := testService(t)
 	f.registration = Registration{Registered: true, PLMN: "46001"}
-	op, err := s.Start(context.Background(), "d", Request{RequestID: "trial", Kind: "trial", Candidates: []string{"B", "A"}, RegistrationSeconds: 1, StabilitySeconds: 1})
+	// Keep a full polling interval beyond stability so race instrumentation does
+	// not make the successful observation coincide with its deadline.
+	const registrationWindowSeconds = 2
+	op, err := s.Start(context.Background(), "d", Request{RequestID: "trial", Kind: "trial", Candidates: []string{"B", "A"}, RegistrationSeconds: registrationWindowSeconds, StabilitySeconds: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

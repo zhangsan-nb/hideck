@@ -28,6 +28,65 @@ export type SystemSettings = {
 	openwrt_dynamic_interfaces: boolean
 }
 
+export type ArchiveStatus = {
+  running: boolean
+  last_started_at?: string
+  last_completed_at?: string
+  last_error?: string
+  last_summary: ArchiveRunSummary
+}
+
+export type ArchiveRunSummary = {
+  uploaded: number
+  skipped: number
+  bytes: number
+}
+
+export type ArchiveSettings = {
+  enabled: boolean
+  endpoint: string
+  username: string
+  password_set: boolean
+  base_path: string
+  interval_hours: number
+  retention_days: number
+  auto_cleanup: boolean
+  include_sms: boolean
+  include_calls: boolean
+  include_recordings: boolean
+  status: ArchiveStatus
+}
+
+export type ArchiveSettingsPayload = Omit<ArchiveSettings, 'password_set' | 'status'> & {
+  password: string
+  clear_password?: boolean
+}
+
+export type ArchiveCleanupPreview = {
+	token: string
+  before: string
+  sms_count: number
+  call_count: number
+  recording_count: number
+  recording_bytes: number
+}
+
+export type AutoAnswerSettings = {
+  audio_ready: boolean
+  audio_name: string
+  devices: AutoAnswerDeviceSettings[]
+}
+
+export type AutoAnswerDeviceSettings = {
+  device_id: string
+  enabled: boolean
+  delay_seconds: number
+}
+
+export type PhoneSettings = {
+  auto_answer: AutoAnswerSettings
+}
+
 export type DisclaimerStatus = {
   accepted: boolean
   accepted_at: string | null
@@ -86,6 +145,7 @@ export type WebhookSettings = {
   timeout_ms: number
   retry_max: number
   text_template: string
+  payload_template: string
   headers: Record<string, string>
 }
 
@@ -184,6 +244,7 @@ export type SaveNotificationsPayload = {
     timeout_ms: number
     retry_max: number
     text_template: string
+    payload_template: string
     headers?: Record<string, string>
   }
   bark: {
@@ -208,6 +269,7 @@ export type TestWebhookPayload = {
   timeout_ms: number
   retry_max: number
   text_template: string
+  payload_template: string
   headers?: Record<string, string>
 }
 
@@ -290,6 +352,65 @@ export const systemService = {
     return callService(async () => {
       await api.put('/settings/system', payload)
       return true
+    })
+  },
+  getArchiveSettings() {
+    return callService(async () => {
+      const res = await api.get<ArchiveSettings>('/settings/archive')
+      return res.data
+    })
+  },
+  saveArchiveSettings(payload: ArchiveSettingsPayload) {
+    return callService(async () => {
+      const res = await api.put<ArchiveSettings>('/settings/archive', payload)
+      return res.data
+    })
+  },
+  testArchiveSettings(payload: ArchiveSettingsPayload) {
+    return callService(async () => {
+      await api.post('/settings/archive/test', payload)
+      return true
+    })
+  },
+  runArchive() {
+    return callService(async () => {
+      const res = await api.post<{ status: string; summary: ArchiveRunSummary }>('/archive/actions/run', {})
+      return res.data.summary
+    })
+  },
+  previewArchiveCleanup() {
+    return callService(async () => {
+      const res = await api.get<ArchiveCleanupPreview>('/archive/cleanup/preview')
+      return res.data
+    })
+  },
+  cleanupArchive(previewToken: string) {
+    return callService(async () => {
+      const res = await api.post<{ status: string; cleaned: ArchiveCleanupPreview }>('/archive/cleanup', {
+        confirm: true,
+        preview_token: previewToken,
+      })
+      return res.data.cleaned
+    })
+  },
+  getPhoneSettings() {
+    return callService(async () => {
+      const res = await api.get<PhoneSettings>('/settings/phone')
+      return res.data
+    })
+  },
+  saveAutoAnswerDevice(deviceId: string, payload: Pick<AutoAnswerDeviceSettings, 'enabled' | 'delay_seconds'>) {
+    return callService(async () => {
+      await api.put(`/settings/phone/auto-answer/devices/${encodeURIComponent(deviceId)}`, payload)
+      return true
+    })
+  },
+  uploadAutoAnswerAudio(file: File) {
+    return callService(async () => {
+      const data = new FormData()
+      data.append('file', file)
+      const res = await api.post<AutoAnswerSettings>('/settings/phone/auto-answer/audio', data)
+      return res.data
     })
   },
   getPasswordStatus() {

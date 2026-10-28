@@ -169,9 +169,10 @@ webhook:
 			AllowedGroupIDs: []string{"wecom-group"},
 		},
 		Webhook: WebhookConfig{
-			Enabled:      true,
-			URLs:         []string{"https://example.com/webhook"},
-			TextTemplate: "{{device_label}} {{text}}",
+			Enabled:         true,
+			URLs:            []string{"https://example.com/webhook"},
+			TextTemplate:    "{{device_label}} {{text}}",
+			PayloadTemplate: `{"title":{{title}},"desp":{{message}}}`,
 		},
 		WeCom: WeComConfig{
 			Enabled:         true,
@@ -207,9 +208,10 @@ webhook:
 		"text_template:",
 		"{{device_label}}",
 		"{{text}}",
-		"wecom:",
 		"payload_template:",
+		"{{title}}",
 		"{{message}}",
+		"wecom:",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected config to contain %q, got:\n%s", want, text)
@@ -221,5 +223,12 @@ webhook:
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Webhook.PayloadTemplate != `{"title":{{title}},"desp":{{message}}}` {
+		t.Fatalf("webhook payload template = %q", loaded.Webhook.PayloadTemplate)
 	}
 }

@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -22,6 +23,18 @@ type weComCommandContext struct {
 type weComCommandReply struct {
 	text        string
 	attachments []CommandAttachment
+}
+
+func (w *WeComBotChannel) SendNotificationWithAttachments(ctx NotificationContext, attachments []CommandAttachment) error {
+	state := w.snapshotState()
+	target := strings.TrimSpace(state.WeComBot.DefaultTarget)
+	if target == "" {
+		return errors.New("企业微信长连接尚未绑定默认通知目标")
+	}
+	command := &weComCommandContext{channel: w, target: target, released: true}
+	return command.respond(context.Background(), weComCommandReply{
+		text: ctx.Text, attachments: append([]CommandAttachment(nil), attachments...),
+	})
 }
 
 func (c *weComCommandContext) Reply(text string) {

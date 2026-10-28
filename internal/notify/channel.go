@@ -31,6 +31,10 @@ type commandAttachmentContext interface {
 	ReplyWithAttachments(text string, attachments []CommandAttachment)
 }
 
+type notificationAttachmentChannel interface {
+	SendNotificationWithAttachments(ctx NotificationContext, attachments []CommandAttachment) error
+}
+
 type commandProgressContext interface {
 	Progress(text string)
 }

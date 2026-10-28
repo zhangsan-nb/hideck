@@ -42,7 +42,7 @@ func (s *Server) workerForICCID(iccid string) *device.Worker {
 	return nil
 }
 
-func rejectLebaraUKRFUnlock(c *gin.Context, class device.LebaraUKClass, err error) bool {
+func rejectLebaraUKRFUnlock(c businessContext, class device.LebaraUKClass, err error) bool {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  "error",
@@ -62,6 +62,16 @@ func rejectLebaraUKRFUnlock(c *gin.Context, class device.LebaraUKClass, err erro
 }
 
 func (s *Server) handleEsimRecoverLebaraIdentity(c *gin.Context) {
+	s.useEsimRecoverLebaraIdentity(c)
+}
+
+func (s *Server) useEsimRecoverLebaraIdentity(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	id := deviceIDParam(c)
 	iccid := strings.TrimSpace(c.Param("iccid"))
 	if iccid == "" {
@@ -89,7 +99,7 @@ func (s *Server) handleEsimRecoverLebaraIdentity(c *gin.Context) {
 	c.JSON(status, gin.H{"status": "error", "message": err.Error()})
 }
 
-func writeLebaraUKRFLockError(c *gin.Context, err error) bool {
+func writeLebaraUKRFLockError(c businessContext, err error) bool {
 	if err == nil || !device.IsLebaraUKPolicyError(err) {
 		return false
 	}

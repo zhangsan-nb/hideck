@@ -23,6 +23,16 @@ type networkPatchRequest struct {
 }
 
 func (s *Server) handleDeviceNetworkPatch(c *gin.Context) {
+	s.useDeviceNetworkPatch(c)
+}
+
+func (s *Server) useDeviceNetworkPatch(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req networkPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "enabled 为必填项"})
@@ -30,9 +40,19 @@ func (s *Server) handleDeviceNetworkPatch(c *gin.Context) {
 	}
 
 	deviceID := deviceIDParam(c)
+	if deviceID == "" || s == nil || s.pool == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "设备参数无效"})
+		return
+	}
+	releaseMutation := s.pool.AcquireManagedDeviceMutation(deviceID)
+	defer releaseMutation()
+	if s.pool.IsESIMSwitching(deviceID) {
+		c.JSON(http.StatusConflict, gin.H{"status": "error", "message": "设备正在切换 SIM，暂不能修改网络"})
+		return
+	}
 
 	if *req.Enabled {
-		class, classifyErr := s.classifyLebaraUKForDevice(c.Request.Context(), deviceID)
+		class, classifyErr := s.classifyLebaraUKForDevice(businessRequestContext(c), deviceID)
 		if rejectLebaraUKRFUnlock(c, class, classifyErr) {
 			return
 		}
@@ -60,7 +80,7 @@ func (s *Server) handleDeviceNetworkPatch(c *gin.Context) {
 			return
 		}
 		s.pool.SetWorkerNetworkPolicy(deviceID, true, effectiveIPVersion, effectiveAPN)
-		s.handleDeviceMgmtStartNetwork(c)
+		s.useDeviceMgmtStartNetworkLocked(c, deviceID)
 		return
 	}
 
@@ -74,10 +94,20 @@ func (s *Server) handleDeviceNetworkPatch(c *gin.Context) {
 	if err := s.pool.ApplyCurrentCardPolicy(deviceID, "network_disabled"); err != nil {
 		logger.Debug("关闭网络后重投影卡策略失败", "device", deviceID, "err", err)
 	}
-	s.handleDeviceMgmtStopNetwork(c)
+	s.useDeviceMgmtStopNetworkLocked(c, deviceID)
 }
 
 func (s *Server) handleDeviceVoWiFiPatch(c *gin.Context) {
+	s.useDeviceVoWiFiPatch(c)
+}
+
+func (s *Server) useDeviceVoWiFiPatch(c businessContext) {
+	releaseOperation, allowed := s.acquireBusinessMutation(c)
+	if !allowed {
+		return
+	}
+	defer releaseOperation()
+
 	var req enabledPatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "enabled 为必填项"})
@@ -85,6 +115,16 @@ func (s *Server) handleDeviceVoWiFiPatch(c *gin.Context) {
 	}
 
 	deviceID := deviceIDParam(c)
+	if deviceID == "" || s == nil || s.pool == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "设备参数无效"})
+		return
+	}
+	releaseMutation := s.pool.AcquireManagedDeviceMutation(deviceID)
+	defer releaseMutation()
+	if s.pool.IsESIMSwitching(deviceID) {
+		c.JSON(http.StatusConflict, gin.H{"status": "error", "message": "设备正在切换 SIM，暂不能修改通话模式"})
+		return
+	}
 
 	if *req.Enabled {
 		// 落库：置 vowifi_enabled=true。若带 mode/data_strategy 则一并落库。
@@ -104,7 +144,7 @@ func (s *Server) handleDeviceVoWiFiPatch(c *gin.Context) {
 			forceVoLTE = true
 		}
 		if device.PhoneModeCampsOnCell(mode) {
-			class, classifyErr := s.classifyLebaraUKForDevice(c.Request.Context(), deviceID)
+			class, classifyErr := s.classifyLebaraUKForDevice(businessRequestContext(c), deviceID)
 			if rejectLebaraUKRFUnlock(c, class, classifyErr) {
 				return
 			}
@@ -199,7 +239,7 @@ func (s *Server) handleDeviceVoWiFiPatch(c *gin.Context) {
 			})
 			return
 		}
-		s.handleVoWiFiEnable(c)
+		s.useVoWiFiEnableLocked(c, deviceID)
 		return
 	}
 
@@ -213,7 +253,7 @@ func (s *Server) handleDeviceVoWiFiPatch(c *gin.Context) {
 		return
 	}
 	s.pool.SetWorkerVoWiFiPolicy(deviceID, false)
-	s.handleVoWiFiDisable(c)
+	s.useVoWiFiDisableLocked(c, deviceID)
 }
 
 // vowifiEnablePolicyMutation 开 VoWiFi 的落库副作用：只置 vowifi，飞行意图保持不变。

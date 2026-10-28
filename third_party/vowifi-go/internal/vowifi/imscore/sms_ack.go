@@ -25,6 +25,7 @@ type rpReportRequest struct {
 	ServiceCenter string
 	OmitBinaryCTE bool
 	OmitInReplyTo bool
+	attempt       int
 }
 
 type rpReportRejectError struct {
@@ -106,6 +107,10 @@ func (s *Service) sendRPReport(report rpReportRequest) error {
 	})
 	err = rpReportTransactionError(result.SIPCode, dispatchErr)
 	annotateRPReportReject(err, modeCtx.Registrar)
+	logging.Info("IMS RP report attempt",
+		"device", s.DeviceID(), "trace_id", traceID, "attempt", report.attempt, "rp_mr", audit.rpMR,
+		"transport", audit.transport, "inbound_peer", modeCtx.InboundPeer,
+		"sip_status", result.SIPCode, "error", traceErrorText(err))
 	s.logRPReportProtocolTrace(request, modeCtx, report, result.SIPCode, err)
 	s.logRPReportWireTrace(request, result.Response)
 	if err != nil {
@@ -212,6 +217,16 @@ func (s *Service) sendRPReportWithRetryPolicy(
 		return 0, errRPReportAborted
 	}
 	current := specRPAckReport(report)
+	// A protected UDP peer already resolves to the registered flow.
+	peer := rpReportOutboundPeer(report.PeerConn)
+	// TS 33.203 7.1: a UE request goes on the UE's own connection from
+	// port_uc to port_ps. On the P-CSCF's connection to port_us the UE is the
+	// server and sends responses (P-CSCF side, NOTE 6). 2degrees answers 403
+	// and One NZ stays silent when the report goes that way. A preset can
+	// still start on that connection.
+	if peer != nil && !s.rpReportPresetPortUS() {
+		current.PeerConn = nil
+	}
 	delay := retryDelay
 	var lastErr error
 	sent := 0
@@ -222,6 +237,7 @@ func (s *Service) sendRPReportWithRetryPolicy(
 			}
 			return sent, errRPReportAborted
 		}
+		current.attempt = attempt
 		lastErr = s.sendRPReport(current)
 		sent++
 		if lastErr == nil {
@@ -230,6 +246,16 @@ func (s *Service) sendRPReportWithRetryPolicy(
 		if !rpReportRetryable(lastErr) {
 			return sent, lastErr
 		}
+		// TS 33.203 7.1: UE requests go from port_uc to port_ps. Some P-CSCFs
+		// silently drop a request sent back over the connection they opened to
+		// port_us. When a path gets no answer at all, retry over the other one.
+		if peer != nil && rpReportRejectStatus(lastErr) == 0 {
+			if current.PeerConn != nil {
+				current.PeerConn = nil
+			} else {
+				current.PeerConn = report.PeerConn
+			}
+		}
 		if delay <= 0 {
 			delay = retryDelay
 		} else {
@@ -237,6 +263,10 @@ func (s *Service) sendRPReportWithRetryPolicy(
 		}
 	}
 	return sent, lastErr
+}
+
+func (s *Service) rpReportPresetPortUS() bool {
+	return s != nil && s.cfg != nil && s.cfg.IMSRegisterTemplate.RPReportOverPortUS
 }
 
 func rpReportRetryable(err error) bool {

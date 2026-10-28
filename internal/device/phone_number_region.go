@@ -26,6 +26,19 @@ func phoneNumberRegionForWorker(worker *Worker) string {
 			mcc = imsi[:3]
 		}
 	}
+	return phoneNumberRegionForMCC(mcc)
+}
+
+// PhoneNumberRegionForIMSI returns the SIM home region captured with an event.
+func PhoneNumberRegionForIMSI(imsi string) string {
+	imsi = strings.TrimSpace(imsi)
+	if len(imsi) < 3 {
+		return ""
+	}
+	return phoneNumberRegionForMCC(imsi[:3])
+}
+
+func phoneNumberRegionForMCC(mcc string) string {
 	if region, ok := upstreamproxy.CountryCodeFromHomeMCC(mcc); ok {
 		return region
 	}

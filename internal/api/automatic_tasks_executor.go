@@ -38,6 +38,7 @@ func (e *automaticTaskExecutor) Execute(
 	if worker == nil {
 		return "", fmt.Errorf("device %s is offline", task.DeviceID)
 	}
+	owner := captureAutomaticTaskDeviceOwner(e.server.pool, worker)
 	profileAction, err := resolveAutomaticTaskProfile(task, worker.CurrentICCID())
 	if err != nil {
 		return "", automation.Permanent(err)
@@ -46,8 +47,15 @@ func (e *automaticTaskExecutor) Execute(
 		if err := reportAutomationProgress(progress, "正在使用设备当前 SIM"); err != nil {
 			return "", err
 		}
-	} else if err := e.switchTaskESIM(ctx, task, progress); err != nil {
-		return "", err
+	} else {
+		if err := e.switchTaskESIM(ctx, task, progress); err != nil {
+			return "", err
+		}
+		worker = e.server.pool.GetWorker(task.DeviceID)
+		if worker == nil {
+			return "", fmt.Errorf("device %s went offline after switching profiles", task.DeviceID)
+		}
+		owner = captureAutomaticTaskDeviceOwner(e.server.pool, worker)
 	}
 
 	snapshot, err := db.ResolveCardPolicy(task.ProfileICCID)
@@ -56,7 +64,10 @@ func (e *automaticTaskExecutor) Execute(
 	}
 	actionStarted := false
 	defer func() {
-		restoreErr := e.restoreEnvironment(task.DeviceID, snapshot)
+		restoreErr := e.restoreEnvironment(automaticTaskRestore{
+			DeviceID: task.DeviceID, ICCID: task.ProfileICCID,
+			Snapshot: snapshot, Owner: owner,
+		})
 		if restoreErr != nil {
 			executeErr = errors.Join(executeErr, fmt.Errorf("restore card policy: %w", restoreErr))
 			if actionStarted && (task.TaskType == automation.TaskTypeSMS || task.TaskType == automation.TaskTypeCall) {
@@ -68,9 +79,9 @@ func (e *automaticTaskExecutor) Execute(
 		return "", err
 	}
 
-	worker = e.server.pool.GetWorker(task.DeviceID)
-	if worker == nil {
-		return "", fmt.Errorf("device %s went offline", task.DeviceID)
+	worker, err = owner.resolve(e.server.pool, task.DeviceID, task.ProfileICCID)
+	if err != nil {
+		return "", err
 	}
 	actionStarted = true
 	switch task.TaskType {
@@ -172,29 +183,46 @@ func (e *automaticTaskExecutor) prepareCellular(task automation.Task) error {
 	return errors.New("PCSC reader devices do not provide a cellular environment")
 }
 
-func (e *automaticTaskExecutor) restoreEnvironment(deviceID string, snapshot db.CardPolicy) error {
-	if err := db.UpsertCardPolicy(snapshot); err != nil {
+func (e *automaticTaskExecutor) restoreEnvironment(request automaticTaskRestore) error {
+	if err := restoreAutomaticTaskCardPolicy(request.Snapshot); err != nil {
 		return err
 	}
-	if !snapshot.VoWiFiEnabled && e.server.pool.IsVoWiFiActive(deviceID) {
-		if err := e.server.pool.DisableVoWiFi(deviceID); err != nil {
+	if _, err := request.Owner.resolve(e.server.pool, request.DeviceID, request.ICCID); err != nil {
+		return fmt.Errorf("skip device restore after ownership changed: %w", err)
+	}
+	if !request.Snapshot.VoWiFiEnabled && e.server.pool.IsVoWiFiActive(request.DeviceID) {
+		if err := e.server.pool.DisableVoWiFi(request.DeviceID); err != nil {
 			return err
 		}
 	}
-	if err := e.server.pool.ApplyCurrentCardPolicy(deviceID, "automatic_task_restore"); err != nil {
+	if err := e.server.pool.ApplyCurrentCardPolicy(request.DeviceID, "automatic_task_restore"); err != nil {
 		return err
 	}
-	if snapshot.VoWiFiEnabled && !e.server.pool.IsVoWiFiActive(deviceID) {
-		if err := e.server.pool.EnableVoWiFi(deviceID); err != nil {
+	if request.Snapshot.VoWiFiEnabled && !e.server.pool.IsVoWiFiActive(request.DeviceID) {
+		if err := e.server.pool.EnableVoWiFi(request.DeviceID); err != nil {
 			return err
 		}
 	}
-	if snapshot.VoWiFiEnabled {
+	if request.Snapshot.VoWiFiEnabled {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		return waitForVoWiFiReady(ctx, e.server.pool, deviceID, false)
+		return waitForVoWiFiReady(ctx, e.server.pool, request.DeviceID, false)
 	}
 	return nil
+}
+
+func restoreAutomaticTaskCardPolicy(snapshot db.CardPolicy) error {
+	current, err := db.GetCardPolicy(snapshot.ICCID)
+	if err != nil {
+		return fmt.Errorf("read current card policy: %w", err)
+	}
+	// The task temporarily owns network state only. A number edited while the
+	// task runs is user data and must not be rolled back with that state.
+	if current.LocalPhoneOverride != snapshot.LocalPhoneOverride {
+		snapshot.Source = current.Source
+	}
+	snapshot.LocalPhoneOverride = current.LocalPhoneOverride
+	return db.UpsertCardPolicy(snapshot)
 }
 
 func (e *automaticTaskExecutor) executeSMS(
@@ -262,10 +290,7 @@ func (e *automaticTaskExecutor) executeCall(
 	if worker.Modem == nil {
 		return "", errors.New("cellular calling requires an AT modem channel")
 	}
-	if err := e.server.pool.AuthorizeOutboundCall(ctx, worker.ID, task.Payload.Phone); err != nil {
-		return "", automation.Permanent(err)
-	}
-	if err := worker.Modem.DialCall(task.Payload.Phone); err != nil {
+	if err := e.server.pool.DialAuthorizedCellularCall(ctx, worker, task.Payload.Phone); err != nil {
 		return "", automation.Permanent(err)
 	}
 	timer := time.NewTimer(time.Duration(task.Payload.HoldSeconds) * time.Second)

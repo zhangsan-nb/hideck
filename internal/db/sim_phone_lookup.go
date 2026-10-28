@@ -11,13 +11,39 @@ import (
 // may be reused across profiles. It falls back to IMSI only without an exact hit.
 func GetPhoneNumberForSMSIdentity(identity SMSIdentity) (string, error) {
 	iccid := CanonicalICCID(identity.ICCID)
+	if phone, err := getCardPolicyPhoneOverride(iccid); err != nil || phone != "" {
+		return phone, err
+	}
 	if phone, err := getSIMSubscriptionPhoneNumberByICCID(iccid); err != nil || phone != "" {
 		return phone, err
 	}
 	if phone, err := getPendingPhoneNumberByICCID(iccid); err != nil || phone != "" {
 		return phone, err
 	}
-	return GetSIMCardPhoneNumberByIMSI(strings.TrimSpace(identity.IMSI))
+	return getMatchingIMSIPhoneNumber(strings.TrimSpace(identity.IMSI), iccid)
+}
+
+func getMatchingIMSIPhoneNumber(imsi, capturedICCID string) (string, error) {
+	if DB == nil || imsi == "" {
+		return "", nil
+	}
+	var subscription SIMSubscription
+	err := DB.Select("phone_number", "current_iccid").Where("imsi = ?", imsi).
+		Limit(1).Take(&subscription).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	boundICCID := CanonicalICCID(subscription.CurrentICCID)
+	if capturedICCID != "" && boundICCID != "" && boundICCID != capturedICCID {
+		return "", nil
+	}
+	if phone, err := getCardPolicyPhoneOverride(boundICCID); err != nil || phone != "" {
+		return phone, err
+	}
+	return strings.TrimSpace(subscription.PhoneNumber), nil
 }
 
 func getPendingPhoneNumberByICCID(iccid string) (string, error) {

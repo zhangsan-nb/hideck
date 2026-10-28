@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iniwex5/vowifi-go/internal/vowifi/common"
+	"github.com/iniwex5/vowifi-go/internal/vowifi/logging"
 	"github.com/iniwex5/vowifi-go/internal/vowifi/runtimecore"
 	"github.com/iniwex5/vowifi-go/runtimehost/messaging"
 )
@@ -259,6 +260,14 @@ func (i *Instance) updateSMSReadiness(readiness SMSReadiness) {
 }
 
 func applySMSReadiness(state *State, readiness SMSReadiness) {
+	if runtimeTakenDown(state.Phase) {
+		// The IMS service of a runtime already taken down can still publish;
+		// its snapshot must not raise SMS or health readiness again.
+		logging.Info("runtime SMS readiness ignored after the runtime went down",
+			"device", state.DeviceID, "phase", state.Phase, "ready", readiness.Ready,
+			"health_ready", readiness.HealthReady, "reason", readiness.Reason)
+		return
+	}
 	state.SMSRXPending = readiness.Registered && readiness.ReceiverPending && !readiness.Ready && !readiness.HealthReady
 	state.SMSReady = state.IMSReady && readiness.Ready
 	state.SMSMOReady = state.IMSReady && readiness.MOReady
@@ -277,6 +286,17 @@ func applySMSReadiness(state *State, readiness SMSReadiness) {
 			state.LastEvent = "sms_pending"
 		}
 	}
+}
+
+// runtimeTakenDown reports a phase entered when the runtime was interrupted,
+// retried, restarted, failed or stopped; readiness returns with the next
+// ims_registered.
+func runtimeTakenDown(phase string) bool {
+	switch phase {
+	case "interrupted", "retrying", "restarting", "error", "stopped":
+		return true
+	}
+	return false
 }
 
 func (i *Instance) setStartFailure(err error) {

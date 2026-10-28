@@ -38,13 +38,14 @@ type notificationSettingsResponse struct {
 		DirectIDs string `json:"direct_ids"`
 	} `json:"qq"`
 	Webhook struct {
-		Enabled      bool              `json:"enabled"`
-		URLs         []string          `json:"urls"`
-		Secret       string            `json:"secret"`
-		TimeoutMs    int               `json:"timeout_ms"`
-		RetryMax     int               `json:"retry_max"`
-		TextTemplate string            `json:"text_template"`
-		Headers      map[string]string `json:"headers,omitempty"`
+		Enabled         bool              `json:"enabled"`
+		URLs            []string          `json:"urls"`
+		Secret          string            `json:"secret"`
+		TimeoutMs       int               `json:"timeout_ms"`
+		RetryMax        int               `json:"retry_max"`
+		TextTemplate    string            `json:"text_template"`
+		PayloadTemplate string            `json:"payload_template"`
+		Headers         map[string]string `json:"headers,omitempty"`
 	} `json:"webhook"`
 	Weixin weixinNotificationSettings `json:"weixin"`
 	Bark   struct {
@@ -100,13 +101,14 @@ type updateNotificationSettingsRequest struct {
 		DirectIDs string `json:"direct_ids"`
 	} `json:"qq"`
 	Webhook struct {
-		Enabled      bool              `json:"enabled"`
-		URLs         []string          `json:"urls"`
-		Secret       string            `json:"secret"`
-		TimeoutMs    int               `json:"timeout_ms"`
-		RetryMax     int               `json:"retry_max"`
-		TextTemplate string            `json:"text_template"`
-		Headers      map[string]string `json:"headers,omitempty"`
+		Enabled         bool              `json:"enabled"`
+		URLs            []string          `json:"urls"`
+		Secret          string            `json:"secret"`
+		TimeoutMs       int               `json:"timeout_ms"`
+		RetryMax        int               `json:"retry_max"`
+		TextTemplate    string            `json:"text_template"`
+		PayloadTemplate string            `json:"payload_template"`
+		Headers         map[string]string `json:"headers,omitempty"`
 	} `json:"webhook"`
 
 	Bark struct {
@@ -184,6 +186,7 @@ func (s *Server) handleGetNotificationSettings(c *gin.Context) {
 	resp.Webhook.TimeoutMs = s.fullCfg.Webhook.TimeoutMs
 	resp.Webhook.RetryMax = s.fullCfg.Webhook.RetryMax
 	resp.Webhook.TextTemplate = s.fullCfg.Webhook.TextTemplate
+	resp.Webhook.PayloadTemplate = s.fullCfg.Webhook.PayloadTemplate
 	resp.Webhook.Headers = s.fullCfg.Webhook.Headers
 	resp.Bark.Enabled = s.fullCfg.Bark.Enabled
 	resp.Bark.URLs = s.fullCfg.Bark.URLs
@@ -291,13 +294,18 @@ func (s *Server) handleUpdateNotificationSettings(c *gin.Context) {
 	}
 
 	wh := config.WebhookConfig{
-		Enabled:      req.Webhook.Enabled,
-		URLs:         whURLs,
-		Secret:       strings.TrimSpace(req.Webhook.Secret),
-		TimeoutMs:    req.Webhook.TimeoutMs,
-		RetryMax:     req.Webhook.RetryMax,
-		TextTemplate: req.Webhook.TextTemplate,
-		Headers:      req.Webhook.Headers,
+		Enabled:         req.Webhook.Enabled,
+		URLs:            whURLs,
+		Secret:          strings.TrimSpace(req.Webhook.Secret),
+		TimeoutMs:       req.Webhook.TimeoutMs,
+		RetryMax:        req.Webhook.RetryMax,
+		TextTemplate:    req.Webhook.TextTemplate,
+		PayloadTemplate: req.Webhook.PayloadTemplate,
+		Headers:         req.Webhook.Headers,
+	}
+	if err := notify.ValidateWebhookPayloadTemplate(wh.PayloadTemplate); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+		return
 	}
 
 	barkURLs := make([]string, 0, len(req.Bark.URLs))

@@ -33,13 +33,15 @@ type acceptDisclaimerRequest struct {
 	Confirmation string `json:"confirmation"`
 }
 
-func (s *Server) handleGetDisclaimerStatus(c *gin.Context) {
-	store := s.disclaimerAcceptances
-	if store == nil {
-		writeDisclaimerStoreError(c, disclaimerReadOperation, db.ErrDisclaimerDatabaseUnavailable)
-		return
+func (s *Server) disclaimerAcceptance(ctx context.Context) (time.Time, bool, error) {
+	if s.disclaimerAcceptances == nil {
+		return time.Time{}, false, db.ErrDisclaimerDatabaseUnavailable
 	}
-	acceptedAt, accepted, err := store.Status(c.Request.Context(), disclaimerVersion)
+	return s.disclaimerAcceptances.Status(ctx, disclaimerVersion)
+}
+
+func (s *Server) handleGetDisclaimerStatus(c *gin.Context) {
+	acceptedAt, accepted, err := s.disclaimerAcceptance(c.Request.Context())
 	if err != nil {
 		writeDisclaimerStoreError(c, disclaimerReadOperation, err)
 		return

@@ -85,6 +85,9 @@ func (dh *DiffieHellman) ComputeSharedSecret(peerPublicKey []byte) ([]byte, erro
 	if dh.ecdhCurve != nil {
 		return dh.computeECDHSecret(peerPublicKey)
 	}
+	if dh.PrivateKey == nil {
+		return nil, errors.New("MODP 私钥未初始化")
+	}
 	peer := new(big.Int).SetBytes(peerPublicKey)
 	one := big.NewInt(1)
 	pMinusOne := new(big.Int).Sub(dh.P, one)
@@ -110,6 +113,24 @@ func (dh *DiffieHellman) computeECDHSecret(peerPublicKey []byte) ([]byte, error)
 	}
 	dh.SharedKey = append(dh.SharedKey[:0], secret...)
 	return dh.SharedKey, nil
+}
+
+// Wipe zeroes the MODP private key and the shared secret once the exchange
+// no longer needs them. An ECDH private key is opaque, so only the reference
+// is dropped. Best-effort like Wipe: copies made by math/big are not reached.
+func (dh *DiffieHellman) Wipe() {
+	if dh == nil {
+		return
+	}
+	Wipe(dh.SharedKey)
+	if dh.PrivateKey != nil {
+		words := dh.PrivateKey.Bits()
+		for i := range words {
+			words[i] = 0
+		}
+		dh.PrivateKey = nil
+	}
+	dh.ecdhPrivKey = nil
 }
 
 func (dh *DiffieHellman) PublicKeyBytes() []byte {

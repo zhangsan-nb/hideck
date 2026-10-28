@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iniwex5/quectel-qmi-go/pkg/qmi"
 )
@@ -104,6 +105,10 @@ func TestControllerReleasesIMSClientsAndFollowsIndications(t *testing.T) {
 		HasStatus: true,
 		Status:    qmi.IMSARegistrationStateRegistered,
 	})
+	deadline := time.Now().Add(time.Second)
+	for !ctl.Status("wwan1").Ready() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	st := ctl.Status("wwan1")
 	if st.Phase != PhaseRegistered || !st.IMSRegistered {
 		t.Fatalf("after indication %+v", st)

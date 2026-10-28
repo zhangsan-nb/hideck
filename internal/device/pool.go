@@ -175,6 +175,11 @@ type Worker struct {
 	switchEvents atomic.Pointer[switchEventSource]
 }
 
+type workerLifecycleOwner struct {
+	worker     *Worker
+	generation uint64
+}
+
 type Pool struct {
 	mbnService      *mbn.Service
 	outboundLimiter OutboundLimiter
@@ -195,8 +200,11 @@ type Pool struct {
 	modemRebootCancels        map[string]chan struct{}
 	modemRebootGeneration     map[string]uint64
 	cfg                       *config.Config
+	managedDeviceSource       func() []config.DeviceConfig
 	notifier                  Notifier
 	mu                        sync.RWMutex
+	managedMutationMu         sync.Mutex
+	managedMutations          map[string]*managedDeviceMutation
 	policyTransitionsMu       sync.Mutex
 	policyTransitions         map[string]*policyTransition
 	ctx                       context.Context
@@ -275,6 +283,7 @@ func NewPoolWithDynamicInterfaceMapper(cfg *config.Config, mapper DynamicInterfa
 		rebuilding:             make(map[string]bool),
 		rebuildAttempt:         make(map[string]uint64),
 		workerGenerations:      make(map[string]uint64),
+		managedMutations:       make(map[string]*managedDeviceMutation),
 		modemRebootRecovering:  make(map[string]bool),
 		modemRebootWakeups:     make(map[string]chan struct{}),
 		modemRebootCancels:     make(map[string]chan struct{}),
@@ -299,6 +308,7 @@ func NewPoolWithDynamicInterfaceMapper(cfg *config.Config, mapper DynamicInterfa
 		atPortLocks:            make(map[string]chan struct{}),
 		openATSession:          openDeviceATSession,
 	}
+	p.managedDeviceSource = newManagedDeviceSource(cfg)
 	p.transportRecovery = NewTransportRecoveryController(p)
 	p.voWiFiHost().ConfigureAdapter(p)
 	p.voWiFiHost().ConfigureRuntimeRecycleHandler(p.handleVoWiFiRuntimeRecycle)
@@ -307,6 +317,28 @@ func NewPoolWithDynamicInterfaceMapper(cfg *config.Config, mapper DynamicInterfa
 	p.modemVoiceCtl = p.newModemVoiceController()
 
 	return p
+}
+
+func newManagedDeviceSource(cfg *config.Config) func() []config.DeviceConfig {
+	// The production pool follows config reloads; isolated pools retain their injected source.
+	if cfg != nil && cfg == config.GetConfig() {
+		return func() []config.DeviceConfig {
+			return append([]config.DeviceConfig(nil), config.ListDevices()...)
+		}
+	}
+	return func() []config.DeviceConfig {
+		if cfg == nil {
+			return nil
+		}
+		return append([]config.DeviceConfig(nil), cfg.Devices...)
+	}
+}
+
+func (p *Pool) managedDevices() []config.DeviceConfig {
+	if p == nil || p.managedDeviceSource == nil {
+		return nil
+	}
+	return p.managedDeviceSource()
 }
 
 func (p *Pool) OnDataConnected(handler func(deviceID string)) {
@@ -348,10 +380,26 @@ func (p *Pool) assignWorkerGeneration(worker *Worker) uint64 {
 	generation := p.nextWorkerGenerationLocked(worker.ID)
 	p.mu.Unlock()
 	worker.generation = generation
-	if p.transportRecovery != nil {
-		p.transportRecovery.SetWorkerGeneration(worker.ID, generation)
-	}
 	return generation
+}
+
+func (p *Pool) captureWorkerLifecycleOwner(deviceID string) workerLifecycleOwner {
+	if p == nil {
+		return workerLifecycleOwner{}
+	}
+	worker := p.GetWorker(strings.TrimSpace(deviceID))
+	if worker == nil {
+		return workerLifecycleOwner{}
+	}
+	return workerLifecycleOwner{worker: worker, generation: worker.generation}
+}
+
+func (p *Pool) workerLifecycleOwnerCurrent(owner workerLifecycleOwner) bool {
+	if p == nil || owner.worker == nil {
+		return false
+	}
+	current := p.GetWorker(owner.worker.ID)
+	return current == owner.worker && current.generation == owner.generation
 }
 
 func (p *Pool) registerWorkerStarting(worker *Worker) error {
@@ -362,14 +410,19 @@ func (p *Pool) registerWorkerStarting(worker *Worker) error {
 	transition.Lock()
 	defer transition.Unlock()
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if current := p.workers[worker.ID]; current != nil && current != worker {
+		p.mu.Unlock()
 		return fmt.Errorf("设备已存在")
 	}
-	p.workers[worker.ID] = worker
 	if worker.generation == 0 {
 		worker.generation = p.nextWorkerGenerationLocked(worker.ID)
 	}
+	generation := worker.generation
+	if p.transportRecovery != nil {
+		p.transportRecovery.SetWorkerGeneration(worker.ID, generation)
+	}
+	p.workers[worker.ID] = worker
+	p.mu.Unlock()
 	return nil
 }
 
@@ -799,15 +852,10 @@ func (p *Pool) bindQMIStateIndications(worker *Worker) {
 		return
 	}
 
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	worker.QMICore.OnSimStatusChanged(func() {
 		logger.Info("[事件驱动] SIM 状态变化", "device", worker.ID)
-		p.handleSIMStatusEvent(worker.ID, "qmi_sim_status", nil, "")
-		p.wakeDesiredVoWiFiRecoverFromDeviceEvent(worker.ID, "post_switch_qmi_sim_status")
-		go func() {
-			if err := p.applyNetworkPreference(worker); err != nil {
-				logger.Warn("SIM 状态变化后 QMI 网络偏好协调失败", "device", worker.ID, "err", err)
-			}
-		}()
+		p.handleSIMStatusEventForOwner(owner, "qmi_sim_status", nil, "")
 	})
 
 	worker.QMICore.OnNASServingSystemChanged(func(info *qmi.ServingSystem) {
@@ -816,7 +864,7 @@ func (p *Pool) bindQMIStateIndications(worker *Worker) {
 }
 
 func (p *Pool) handleNASServingSystemChanged(worker *Worker, info *qmi.ServingSystem) {
-	if p == nil || worker == nil {
+	if p == nil || worker == nil || !p.workerLifecycleOwnerCurrent(workerLifecycleOwner{worker: worker, generation: worker.generation}) {
 		return
 	}
 	if worker.shouldAbortCellularRegistration() {
@@ -838,10 +886,10 @@ func (p *Pool) bindMBIMStateIndications(worker *Worker) {
 		return
 	}
 
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	worker.MBIMCore.OnSimStatusChanged(func() {
 		logger.Info("[事件驱动] MBIM SIM 状态变化", "device", worker.ID)
-		p.handleSIMStatusEvent(worker.ID, "mbim_sim_status", nil, "")
-		p.wakeDesiredVoWiFiRecoverFromDeviceEvent(worker.ID, "post_switch_mbim_sim_status")
+		p.handleSIMStatusEventForOwner(owner, "mbim_sim_status", nil, "")
 	})
 }
 
@@ -849,9 +897,10 @@ func (p *Pool) bindMBIMSlotIndications(worker *Worker) {
 	if worker == nil || worker.MBIMCore == nil {
 		return
 	}
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	worker.MBIMCore.OnSlotStatus(func(slotIndex, state uint32) {
 		logger.Debug("收到 MBIM 卡槽状态指示", "device", worker.ID, "slot", slotIndex, "state", state)
-		p.wakeDesiredVoWiFiRecoverFromDeviceEvent(worker.ID, "mbim_slot_status")
+		p.wakeDesiredVoWiFiRecoverForOwner(owner, "mbim_slot_status")
 	})
 }
 
@@ -859,10 +908,17 @@ func (p *Pool) bindMBIMHealthIndications(worker *Worker) {
 	if worker == nil || worker.MBIMCore == nil {
 		return
 	}
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	worker.MBIMCore.OnRecoveryExhausted(func(reason string, err error) {
+		if !p.workerLifecycleOwnerCurrent(owner) {
+			return
+		}
 		p.maybeScheduleTransportRebuild(worker, HealthLayerMBIM, reason, err)
 	})
 	worker.MBIMCore.OnHealth(func(event mbimcore.HealthEvent) {
+		if !p.workerLifecycleOwnerCurrent(owner) {
+			return
+		}
 		switch event.State {
 		case mbimcore.HealthEventHealthy:
 			worker.RecordWatchdogEvent(WatchdogEvent{
@@ -902,10 +958,17 @@ func (p *Pool) bindQMIHealthIndications(worker *Worker) {
 	if worker == nil || worker.QMICore == nil {
 		return
 	}
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	worker.QMICore.OnRecoveryExhausted(func(reason string, err error) {
+		if !p.workerLifecycleOwnerCurrent(owner) {
+			return
+		}
 		p.maybeScheduleTransportRebuild(worker, HealthLayerQMI, reason, err)
 	})
 	worker.QMICore.OnHealthEvent(func(event qmicore.HealthEvent) {
+		if !p.workerLifecycleOwnerCurrent(owner) {
+			return
+		}
 		switch event.State {
 		case qmicore.HealthEventHealthy:
 			worker.RecordWatchdogEvent(WatchdogEvent{
@@ -946,12 +1009,20 @@ func (p *Pool) handleSIMStatusEvent(deviceID, source string, insertedHint *bool,
 	if p == nil || deviceID == "" {
 		return
 	}
+	p.handleSIMStatusEventForOwner(p.captureWorkerLifecycleOwner(deviceID), source, insertedHint, state)
+}
+
+func (p *Pool) handleSIMStatusEventForOwner(owner workerLifecycleOwner, source string, insertedHint *bool, state string) {
+	if p == nil || owner.worker == nil || !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
 	if insertedHint != nil && *insertedHint {
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(state), "READY") {
 		return
 	}
+	deviceID := owner.worker.ID
 
 	p.simEventMu.Lock()
 	if p.simEventTimers == nil {
@@ -960,9 +1031,11 @@ func (p *Pool) handleSIMStatusEvent(deviceID, source string, insertedHint *bool,
 	if timer := p.simEventTimers[deviceID]; timer != nil {
 		timer.Stop()
 	}
-	p.simEventTimers[deviceID] = time.AfterFunc(1500*time.Millisecond, func() {
-		p.confirmSIMRemovedAndStopVoWiFi(deviceID, source)
+	var timer *time.Timer
+	timer = time.AfterFunc(1500*time.Millisecond, func() {
+		p.confirmSIMRemovedForOwner(owner, source, timer)
 	})
+	p.simEventTimers[deviceID] = timer
 	p.simEventMu.Unlock()
 }
 
@@ -970,6 +1043,7 @@ var deviceEventRecoverWakeDelay = 500 * time.Millisecond
 
 type deviceEventRecoverWakeup struct {
 	timer   *time.Timer
+	owner   workerLifecycleOwner
 	sources map[string]struct{}
 }
 
@@ -981,6 +1055,15 @@ func (p *Pool) wakeDesiredVoWiFiRecoverFromDeviceEvent(deviceID, reason string) 
 	if deviceID == "" {
 		return
 	}
+	owner := p.captureWorkerLifecycleOwner(deviceID)
+	p.wakeDesiredVoWiFiRecoverForOwner(owner, reason)
+}
+
+func (p *Pool) wakeDesiredVoWiFiRecoverForOwner(owner workerLifecycleOwner, reason string) {
+	if p == nil || p.ctx.Err() != nil || owner.worker == nil || !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
+	deviceID := owner.worker.ID
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		reason = vowifiDesiredReconcileReason
@@ -995,14 +1078,17 @@ func (p *Pool) wakeDesiredVoWiFiRecoverFromDeviceEvent(deviceID, reason string) 
 		p.deviceEventWakeups = make(map[string]*deviceEventRecoverWakeup)
 	}
 	state := p.deviceEventWakeups[deviceID]
-	if state == nil {
-		state = &deviceEventRecoverWakeup{sources: make(map[string]struct{})}
+	if state == nil || state.owner != owner {
+		if state != nil && state.timer != nil {
+			state.timer.Stop()
+		}
+		state = &deviceEventRecoverWakeup{owner: owner, sources: make(map[string]struct{})}
 		p.deviceEventWakeups[deviceID] = state
 	}
 	state.sources[reason] = struct{}{}
 	if state.timer == nil {
 		state.timer = time.AfterFunc(delay, func() {
-			p.flushDesiredVoWiFiRecoverFromDeviceEvent(deviceID)
+			p.flushDesiredVoWiFiRecoverFromDeviceEvent(deviceID, state)
 		})
 	} else {
 		state.timer.Reset(delay)
@@ -1010,13 +1096,13 @@ func (p *Pool) wakeDesiredVoWiFiRecoverFromDeviceEvent(deviceID, reason string) 
 	p.deviceEventWakeMu.Unlock()
 }
 
-func (p *Pool) flushDesiredVoWiFiRecoverFromDeviceEvent(deviceID string) {
+func (p *Pool) flushDesiredVoWiFiRecoverFromDeviceEvent(deviceID string, expected *deviceEventRecoverWakeup) {
 	if p == nil || p.ctx.Err() != nil {
 		return
 	}
 	p.deviceEventWakeMu.Lock()
 	state := p.deviceEventWakeups[deviceID]
-	if state == nil {
+	if state == nil || state != expected {
 		p.deviceEventWakeMu.Unlock()
 		return
 	}
@@ -1027,6 +1113,12 @@ func (p *Pool) flushDesiredVoWiFiRecoverFromDeviceEvent(deviceID string) {
 	}
 	p.deviceEventWakeMu.Unlock()
 	if len(sources) == 0 {
+		return
+	}
+	transition := p.policyTransitionFor(deviceID)
+	transition.Lock()
+	defer transition.Unlock()
+	if !p.workerLifecycleOwnerCurrent(state.owner) {
 		return
 	}
 	sort.Strings(sources)
@@ -1050,19 +1142,35 @@ func (p *Pool) flushDesiredVoWiFiRecoverFromDeviceEvent(deviceID string) {
 }
 
 func (p *Pool) confirmSIMRemovedAndStopVoWiFi(deviceID, source string) {
-	p.simEventMu.Lock()
-	delete(p.simEventTimers, deviceID)
-	p.simEventMu.Unlock()
+	p.confirmSIMRemovedForOwner(p.captureWorkerLifecycleOwner(deviceID), source, nil)
+}
 
+func (p *Pool) confirmSIMRemovedForOwner(owner workerLifecycleOwner, source string, expected *time.Timer) {
+	if p == nil || owner.worker == nil {
+		return
+	}
+	deviceID := owner.worker.ID
+	if !p.consumeSIMEventTimer(deviceID, expected) {
+		return
+	}
+	releaseMutation := p.AcquireManagedDeviceMutation(deviceID)
+	defer releaseMutation()
+	transition := p.policyTransitionFor(deviceID)
+	transition.Lock()
+	if !p.workerLifecycleOwnerCurrent(owner) {
+		transition.Unlock()
+		return
+	}
 	if p.IsESIMSwitching(deviceID) {
+		transition.Unlock()
 		logger.Info("SIM 状态变化发生在 eSIM 切换中，跳过 VoWiFi 自动停止", "device", deviceID, "source", source)
 		return
 	}
-	w := p.GetWorker(deviceID)
-	if w == nil || w.Backend == nil {
+	w := owner.worker
+	if w.Backend == nil {
+		transition.Unlock()
 		return
 	}
-
 	baseCtx := p.ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -1071,23 +1179,126 @@ func (p *Pool) confirmSIMRemovedAndStopVoWiFi(deviceID, source string) {
 	defer cancel()
 	inserted, err := w.Backend.IsSimInserted(ctx)
 	if err != nil {
+		transition.Unlock()
 		logger.Warn("SIM 拔卡确认失败，跳过 VoWiFi 自动停止", "device", deviceID, "source", source, "err", err)
 		return
 	}
 	if inserted {
-		_ = w.RefreshRuntime(ctx, "sim_status_inserted")
+		result := p.refreshConfirmedSIMInsertion(owner)
+		transition.Unlock()
+		p.finishConfirmedSIMInsertion(owner, source, result)
 		return
 	}
+	p.handleConfirmedSIMRemoval(owner, source, baseCtx)
+	transition.Unlock()
+}
 
-	_ = w.RefreshRuntime(ctx, "sim_removed")
+func (p *Pool) consumeSIMEventTimer(deviceID string, expected *time.Timer) bool {
+	p.simEventMu.Lock()
+	defer p.simEventMu.Unlock()
+	if expected != nil && p.simEventTimers[deviceID] != expected {
+		return false
+	}
+	delete(p.simEventTimers, deviceID)
+	return true
+}
+
+type simInsertionRefreshResult struct {
+	current         bool
+	identityChanged bool
+	err             error
+}
+
+// Caller holds the device policy transition lock.
+func (p *Pool) refreshConfirmedSIMInsertion(owner workerLifecycleOwner) simInsertionRefreshResult {
+	w := owner.worker
+	previous := currentSIMOwnership(w)
+	_, err := p.refreshWorkerIdentityState(w, "sim_status_inserted")
+	return simInsertionRefreshResult{
+		current:         p.workerLifecycleOwnerCurrent(owner),
+		identityChanged: err == nil && currentSIMOwnership(w) != previous,
+		err:             err,
+	}
+}
+
+func (p *Pool) finishConfirmedSIMInsertion(owner workerLifecycleOwner, source string, result simInsertionRefreshResult) {
+	w := owner.worker
+	if !result.current || !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
+	p.broadcastVoWiFiStateChange(w.ID)
+	if result.err != nil {
+		logger.Warn("SIM 插入后刷新身份失败", "device", w.ID, "source", source, "err", result.err)
+		return
+	}
+	if result.identityChanged {
+		if err := p.retirePhoneRuntimesForSIMChange(owner); err != nil {
+			logger.Warn("SIM 身份变化后停止旧电话运行时失败", "device", w.ID, "source", source, "err", err)
+			return
+		}
+	}
+	policyResult := p.resolveAndApplyPolicy(w, "sim_status_inserted")
+	if policyResult.Err != nil {
+		logger.Warn("SIM 插入后应用卡策略失败", "device", w.ID, "source", source, "err", policyResult.Err)
+		return
+	}
+	if !policyResult.Applied {
+		logger.Info("SIM 插入后卡策略尚未应用，等待后续收敛", "device", w.ID, "source", source, "reason", policyResult.Reason)
+		return
+	}
+	if !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
+	p.wakeDesiredVoWiFiRecoverFromDeviceEvent(w.ID, "post_switch_"+strings.TrimSpace(source))
+}
+
+// Caller holds the device policy transition lock.
+func (p *Pool) handleConfirmedSIMRemoval(owner workerLifecycleOwner, source string, baseCtx context.Context) {
+	if !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
+	w := owner.worker
+	deviceID := w.ID
+	refreshCtx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
+	_ = w.RefreshRuntime(refreshCtx, "sim_removed")
+	cancel()
+	w.markSIMRemoved("sim_removed")
+	p.detachPersistedSIMBinding(w)
+	p.broadcastVoWiFiStateChange(deviceID)
 	p.clearDesiredVoWiFiRecoverState(deviceID)
-	if !p.IsVoWiFiActive(deviceID) {
+	p.stopNativeVoLTE(deviceID, "sim_removed")
+	_ = p.stopModemVoice(deviceID)
+	if !p.IsVoWiFiActive(deviceID) && !p.voWiFiHost().Starting(deviceID) && p.GetVoWiFiAppForDevice(deviceID) == nil {
 		return
 	}
 	logger.Warn("检测到 SIM 已拔出，自动停止 VoWiFi", "device", deviceID, "source", source)
+	if !p.workerLifecycleOwnerCurrent(owner) {
+		return
+	}
 	if err := p.voWiFiHost().Disable(baseCtx, deviceID, "sim_removed", false); err != nil {
 		logger.Warn("SIM 拔出后停止 VoWiFi 失败", "device", deviceID, "source", source, "err", err)
 	}
+}
+
+func (p *Pool) cancelWorkerLifecycleTimers(deviceID string) {
+	if p == nil {
+		return
+	}
+	deviceID = strings.TrimSpace(deviceID)
+	p.cancelLebaraUKIdentityRecover(deviceID)
+	p.simEventMu.Lock()
+	if timer := p.simEventTimers[deviceID]; timer != nil {
+		timer.Stop()
+	}
+	delete(p.simEventTimers, deviceID)
+	p.simEventMu.Unlock()
+
+	p.deviceEventWakeMu.Lock()
+	if state := p.deviceEventWakeups[deviceID]; state != nil && state.timer != nil {
+		state.timer.Stop()
+	}
+	delete(p.deviceEventWakeups, deviceID)
+	p.deviceEventWakeMu.Unlock()
 }
 
 func (p *Pool) bindESIMUIMIndications(worker *Worker) {
@@ -1095,6 +1306,7 @@ func (p *Pool) bindESIMUIMIndications(worker *Worker) {
 		return
 	}
 
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	worker.QMICore.OnUIMRefresh(func(info *qmi.UIMRefreshIndication) {
 		fileCount := 0
 		stage := uint8(0)
@@ -1106,7 +1318,7 @@ func (p *Pool) bindESIMUIMIndications(worker *Worker) {
 			"device", worker.ID,
 			"stage", stage,
 			"file_count", fileCount)
-		if !workerAcceptsRuntimeUIMIndication(worker) {
+		if !p.workerLifecycleOwnerCurrent(owner) || !workerAcceptsRuntimeUIMIndication(worker) {
 			logger.Debug("QMI 启动期 UIM refresh 指示已延后处理",
 				"device", worker.ID,
 				"stage", stage,
@@ -1119,7 +1331,7 @@ func (p *Pool) bindESIMUIMIndications(worker *Worker) {
 		if src := worker.currentSwitchEventSource(); src != nil {
 			src.PublishRefresh(stage)
 		}
-		p.wakeDesiredVoWiFiRecoverFromDeviceEvent(worker.ID, "post_switch_uim_refresh")
+		p.wakeDesiredVoWiFiRecoverForOwner(owner, "post_switch_uim_refresh")
 	})
 
 	worker.QMICore.OnUIMSlotStatus(func(info *qmi.UIMSlotStatus) {
@@ -1128,7 +1340,7 @@ func (p *Pool) bindESIMUIMIndications(worker *Worker) {
 			slotCount = len(info.Slots)
 		}
 		logger.Debug("收到 UIM 卡槽状态指示", "device", worker.ID, "slot_count", slotCount)
-		if !workerAcceptsRuntimeUIMIndication(worker) {
+		if !p.workerLifecycleOwnerCurrent(owner) || !workerAcceptsRuntimeUIMIndication(worker) {
 			logger.Debug("QMI 启动期 UIM 卡槽状态指示已延后处理",
 				"device", worker.ID,
 				"slot_count", slotCount)
@@ -1140,7 +1352,7 @@ func (p *Pool) bindESIMUIMIndications(worker *Worker) {
 		if src := worker.currentSwitchEventSource(); src != nil {
 			src.PublishSlotStatus()
 		}
-		p.wakeDesiredVoWiFiRecoverFromDeviceEvent(worker.ID, "post_switch_uim_slot_status")
+		p.wakeDesiredVoWiFiRecoverForOwner(owner, "post_switch_uim_slot_status")
 	})
 }
 
@@ -1177,8 +1389,22 @@ func (p *Pool) AbandonDevice(deviceID string) error {
 	p.beginRebuildAttemptLocked(deviceID)
 	delete(p.rebuilding, deviceID)
 	p.mu.Unlock()
-	if err := p.RemoveWorker(deviceID); err != nil && !errors.Is(err, ErrWorkerNotFound) {
-		return err
+	transition := p.policyTransitionFor(deviceID)
+	for {
+		transition.Lock()
+		p.clearESIMSwitch(deviceID)
+		transition.switchEpoch++
+		err := p.removeWorkerForPolicyTransition(deviceID)
+		transition.Unlock()
+		if !errors.Is(err, errWorkerInitializing) {
+			if err != nil && !errors.Is(err, ErrWorkerNotFound) {
+				return err
+			}
+			break
+		}
+		if !p.waitWorkerInitSettled(deviceID, 10*time.Second) {
+			return fmt.Errorf("设备 %s 正在初始化中，等待停止超时", deviceID)
+		}
 	}
 	p.forgetRuntimeQMIAttachment(deviceID)
 	return nil
@@ -1192,6 +1418,9 @@ func (p *Pool) RemoveWorker(deviceID string) error {
 	transition := p.policyTransitionFor(deviceID)
 	for {
 		transition.Lock()
+		if !p.IsESIMSwitching(deviceID) {
+			transition.switchEpoch++
+		}
 		err := p.removeWorkerForPolicyTransition(deviceID)
 		transition.Unlock()
 		if !errors.Is(err, errWorkerInitializing) {
@@ -1212,6 +1441,7 @@ func (p *Pool) removeWorkerForPolicyTransition(deviceID string) error {
 	if err := p.voWiFiHost().Disable(p.ctx, deviceID, "remove_worker", false); err != nil {
 		return err
 	}
+	p.cancelWorkerLifecycleTimers(deviceID)
 	p.mu.Lock()
 	worker := p.workers[deviceID]
 	alreadyRebuilding := p.rebuilding[deviceID]
@@ -1378,15 +1608,10 @@ func (p *Pool) refreshIdentityAndApplyCardPolicy(worker *Worker, reason string) 
 	if worker == nil {
 		return liveSIMIdentityRefreshResult{}, nil
 	}
-
-	_ = worker.RefreshRuntime(nil, reason)
-	result, identityErr := worker.refreshIdentityLive(nil, reason)
+	result, identityErr := p.refreshWorkerIdentityState(worker, reason)
 	refreshErr := identityErr
 
 	if p != nil {
-		p.PersistRuntimeState(worker)
-		p.PersistIdentityState(worker)
-
 		if identityErr == nil {
 			if worker.CurrentICCID() != "" {
 				policyResult := p.resolveAndApplyPolicy(worker, reason)
@@ -1399,6 +1624,19 @@ func (p *Pool) refreshIdentityAndApplyCardPolicy(worker *Worker, reason string) 
 		p.broadcastVoWiFiStateChange(worker.ID)
 	}
 	return result, refreshErr
+}
+
+func (p *Pool) refreshWorkerIdentityState(worker *Worker, reason string) (liveSIMIdentityRefreshResult, error) {
+	if worker == nil {
+		return liveSIMIdentityRefreshResult{}, fmt.Errorf("worker_nil")
+	}
+	_ = worker.RefreshRuntime(nil, reason)
+	result, err := worker.refreshIdentityLive(nil, reason)
+	if p != nil {
+		p.PersistRuntimeState(worker)
+		p.PersistIdentityState(worker)
+	}
+	return result, err
 }
 
 func (p *Pool) applyNetworkPreference(worker *Worker) error {
@@ -1581,6 +1819,7 @@ func (p *Pool) bindModemReadyIndications(worker *Worker) {
 	if worker == nil || worker.Modem == nil {
 		return
 	}
+	owner := workerLifecycleOwner{worker: worker, generation: worker.generation}
 	go func(w *Worker) {
 		for {
 			ch := w.Modem.SubscribeRDY()
@@ -1591,7 +1830,7 @@ func (p *Pool) bindModemReadyIndications(worker *Worker) {
 				return
 			case <-ch:
 				logger.Info("[事件驱动] Modem RDY（切卡补刷新已禁用）", "device", w.ID)
-				p.wakeDesiredVoWiFiRecoverFromDeviceEvent(w.ID, "post_switch_modem_ready")
+				p.wakeDesiredVoWiFiRecoverForOwner(owner, "post_switch_modem_ready")
 			}
 		}
 	}(worker)
@@ -1734,207 +1973,19 @@ func (p *Pool) rescanAndReconnect(opts rescanReconnectOptions) error {
 
 	liveWorkerIndex := BuildWorkerDiscoveryIndex(p.GetAllWorkers(), false)
 	hardware := p.collectRescanHardware(discovered, liveWorkerIndex)
-	managed := config.ListDevices()
+	managed := p.managedDevices()
 	modemDevices, pcscDevices := partitionManagedDevices(managed)
 	resolved := ResolveDeviceIdentities(hardware, modemDevices)
 
 	if len(resolved.Degraded) > 0 || len(resolved.Unmatched) > 0 {
 		logger.Debug("rescan 发现未匹配或退化设备", "degraded", len(resolved.Degraded), "unmatched", len(resolved.Unmatched))
 	}
-
 	for _, pair := range resolved.Matched {
-		md := pair.Config
-		if !FreeDeviceLimitAllowsConfiguredDevice(managed, md.ID) {
-			logger.Warn("当前版本设备数量限制，跳过启动配置设备",
-				"device", md.ID,
-				"limit", DefaultFreeDeviceLimit)
-			continue
-		}
-
-		hw := pair.Hardware
-		useQMI := requiresQMICore(md)
-		worker := p.GetWorker(md.ID)
-
-		if pair.BackfillIMEI != "" {
-			md.ModemIMEI = pair.BackfillIMEI
-		}
-
-		if worker == nil {
-			if !opts.allowWorkerMutation(md.ID) {
-				logger.Debug("跳过非目标设备自动启动：当前处于手动重启恢复重扫窗口",
-					"device", md.ID,
-					"target_device", opts.targetDeviceID)
-				continue
-			}
-			// Worker 不存在，需要启动
-			logger.Info("检测到设备上线，自动启动", "device", md.ID, "imei", md.ModemIMEI)
-			cfg := md
-			if !useQMI {
-				if hw.NetInterface != "" {
-					cfg.Interface = hw.NetInterface
-				}
-				cfg.ControlDevice = strings.TrimSpace(hw.ControlPath)
-				cfg.QMIDevice = strings.TrimSpace(hw.ControlPath)
-				cfg.ATPort = hw.ATPort
-				cfg.ManagePort = hw.ATPort
-			} else {
-				cfg = applyQMIManagedAttachment(cfg, QMIDevice{
-					ControlPath:  hw.ControlPath,
-					NetInterface: hw.NetInterface,
-					USBPath:      hw.USBPath,
-					ATPort:       hw.ATPort,
-				})
-			}
-			if p.lifecycle != nil {
-				p.lifecycle.BeginRecovery(md.ID, LifecyclePhaseWorkerStarting, "rescan_device_online", qmiLifecycleRecoveryTTL)
-			}
-			if _, err := p.AddWorkerFromConfig(withConnectHoldRF(cfg)); err != nil {
-				logger.Warn("自动启动设备失败", "device", md.ID, "err", err)
-			} else if md.VoWiFiEnabled {
-				go func(deviceID string) {
-					if err := p.enableVoWiFiWhenReady(deviceID, 5*time.Second, "device_recovery"); err != nil {
-						logger.Warn("设备恢复后自动重启 VoWiFi 失败", "device", deviceID, "err", err)
-					}
-				}(md.ID)
-			}
-		} else if !worker.IsDeviceHealthy() {
-			if !opts.allowWorkerMutation(md.ID) {
-				logger.Debug("跳过非目标设备重新初始化：当前处于手动重启恢复重扫窗口",
-					"device", md.ID,
-					"target_device", opts.targetDeviceID)
-				continue
-			}
-			// Worker 存在但不健康，需要重建
-			logger.Info("检测到设备恢复，尝试重新初始化", "device", md.ID, "imei", md.ModemIMEI)
-			p.teardownVoWiFiForReconnect(md.ID)
-			if p.lifecycle != nil {
-				p.lifecycle.BeginRecovery(md.ID, LifecyclePhaseWorkerStarting, "rescan_reinitialize", qmiLifecycleRecoveryTTL)
-			}
-			_ = p.RemoveWorker(md.ID)
-			cfg := md
-			if !useQMI {
-				if hw.NetInterface != "" {
-					cfg.Interface = hw.NetInterface
-				}
-				cfg.ControlDevice = strings.TrimSpace(hw.ControlPath)
-				cfg.QMIDevice = strings.TrimSpace(hw.ControlPath)
-				cfg.ATPort = hw.ATPort
-				cfg.ManagePort = hw.ATPort
-			} else {
-				cfg = applyQMIManagedAttachment(cfg, QMIDevice{
-					ControlPath:  hw.ControlPath,
-					NetInterface: hw.NetInterface,
-					USBPath:      hw.USBPath,
-					ATPort:       hw.ATPort,
-				})
-			}
-			if _, err := p.AddWorkerFromConfig(withConnectHoldRF(cfg)); err != nil {
-				logger.Warn("重新初始化设备失败", "device", md.ID, "err", err)
-			} else if md.VoWiFiEnabled {
-				go func(deviceID string) {
-					if err := p.enableVoWiFiWhenReady(deviceID, 5*time.Second, "device_recovery"); err != nil {
-						logger.Warn("设备恢复后自动重启 VoWiFi 失败", "device", deviceID, "err", err)
-					}
-				}(md.ID)
-			}
-		} else {
-			// Worker 存在且标记为健康
-			hwQMI := QMIDevice{
-				ControlPath:  hw.ControlPath,
-				NetInterface: hw.NetInterface,
-				USBPath:      hw.USBPath,
-				ATPort:       hw.ATPort,
-			}
-			if useQMI {
-				if changed, _ := qmiHealthyWorkerAttachmentUpdate(worker, hwQMI); changed {
-					if !opts.allowWorkerMutation(md.ID) {
-						logger.Debug("跳过非目标设备 QMI 路径变化重建：当前处于手动重启恢复重扫窗口",
-							"device", md.ID,
-							"target_device", opts.targetDeviceID,
-							"old_control", worker.Config.ControlDevice,
-							"new_control", hw.ControlPath,
-							"old_interface", worker.Config.Interface,
-							"new_interface", hw.NetInterface)
-						continue
-					}
-					nextCfg := applyQMIManagedAttachment(md, hwQMI)
-					logger.Info("检测到 QMI 设备路径变化，重建 Worker",
-						"device", md.ID,
-						"old_control", worker.Config.ControlDevice,
-						"new_control", nextCfg.ControlDevice,
-						"old_interface", worker.Config.Interface,
-						"new_interface", nextCfg.Interface,
-						"old_usb_path", worker.Config.USBPath,
-						"new_usb_path", nextCfg.USBPath)
-					p.teardownVoWiFiForReconnect(md.ID)
-					if p.lifecycle != nil {
-						p.lifecycle.BeginRecovery(md.ID, LifecyclePhaseWorkerStarting, "rescan_qmi_path_change", qmiLifecycleRecoveryTTL)
-					}
-					if err := p.RemoveWorker(md.ID); err != nil {
-						logger.Warn("移除旧 QMI Worker 失败", "device", md.ID, "err", err)
-						continue
-					}
-					if _, err := p.AddWorkerFromConfig(withConnectHoldRF(nextCfg)); err != nil {
-						logger.Warn("使用新 QMI 路径重建 Worker 失败", "device", md.ID, "err", err)
-					} else if md.VoWiFiEnabled {
-						go func(deviceID string) {
-							if err := p.enableVoWiFiWhenReady(deviceID, 5*time.Second, "device_qmi_path_change"); err != nil {
-								logger.Warn("QMI 路径变化后自动重启 VoWiFi 失败", "device", deviceID, "err", err)
-							}
-						}(md.ID)
-					}
-					continue
-				}
-			}
-			currentATPort := hw.ATPort
-			if currentATPort != "" && currentATPort != worker.Config.ATPort {
-				logger.Info("检测到设备端口变化，重建 Worker",
-					"device", md.ID, "old_port", worker.Config.ATPort, "new_port", currentATPort)
-				p.teardownVoWiFiForReconnect(md.ID)
-				if p.lifecycle != nil {
-					p.lifecycle.BeginRecovery(md.ID, LifecyclePhaseWorkerStarting, "rescan_port_change", qmiLifecycleRecoveryTTL)
-				}
-				_ = p.RemoveWorker(md.ID)
-				cfg := md
-				if !useQMI {
-					if hw.NetInterface != "" {
-						cfg.Interface = hw.NetInterface
-					}
-					cfg.ControlDevice = strings.TrimSpace(hw.ControlPath)
-					cfg.QMIDevice = strings.TrimSpace(hw.ControlPath)
-					cfg.ATPort = hw.ATPort
-					cfg.ManagePort = hw.ATPort
-				} else {
-					cfg = applyQMIManagedAttachment(cfg, hwQMI)
-				}
-				if _, err := p.AddWorkerFromConfig(withConnectHoldRF(cfg)); err != nil {
-					logger.Warn("端口变化后重建设备失败", "device", md.ID, "err", err)
-				} else if md.VoWiFiEnabled {
-					go func(deviceID string) {
-						if err := p.enableVoWiFiWhenReady(deviceID, 5*time.Second, "device_port_change"); err != nil {
-							logger.Warn("端口变化后自动重启 VoWiFi 失败", "device", deviceID, "err", err)
-						}
-					}(md.ID)
-				}
-			}
-		}
+		p.reconcileMatchedRescanDevice(opts, pair, managed)
 	}
 
-	for _, md := range resolved.Offline {
-		if !FreeDeviceLimitAllowsConfiguredDevice(managed, md.ID) {
-			continue
-		}
-		worker := p.GetWorker(md.ID)
-		if worker != nil {
-			logger.Info("检测到设备离线，清理 Worker 以便后续重建",
-				"device", md.ID, "imei", md.ModemIMEI,
-				"was_healthy", worker.IsDeviceHealthy())
-			p.teardownVoWiFiForReconnect(md.ID)
-			if p.lifecycle != nil {
-				p.lifecycle.BeginRecovery(md.ID, LifecyclePhaseUSBWait, "rescan_device_missing", qmiLifecycleRecoveryTTL)
-			}
-			_ = p.RemoveWorker(md.ID)
-		}
+	for _, snapshot := range resolved.Offline {
+		p.reconcileOfflineRescanDevice(opts, snapshot, hardware, managed)
 	}
 
 	return p.reconcilePCSCReaders(opts, managed, pcscDevices)
@@ -1999,7 +2050,8 @@ func (p *Pool) RebuildWorker(deviceID string) error {
 	p.mu.Unlock()
 
 	// 重建 Worker
-	if _, err := p.AddWorkerFromConfig(withConnectHoldRF(*cfg)); err != nil {
+	startedWorker, err := p.AddWorkerFromConfig(withConnectHoldRF(*cfg))
+	if err != nil {
 		return fmt.Errorf("RebuildWorker 重建失败: %w", err)
 	}
 
@@ -2009,8 +2061,9 @@ func (p *Pool) RebuildWorker(deviceID string) error {
 
 	// 如果配置了 VoWiFi 自动启动
 	if cfg.VoWiFiEnabled {
+		start := p.captureVoWiFiReadyStart(startedWorker)
 		go func() {
-			if err := p.enableVoWiFiWhenReady(deviceID, 5*time.Second, "rebuild_worker"); err != nil {
+			if err := p.enableVoWiFiWhenReady(start, 5*time.Second, "rebuild_worker"); err != nil {
 				logger.Error("RebuildWorker 后 VoWiFi 启动失败", "device", deviceID, "err", err)
 			}
 		}()
@@ -2604,6 +2657,10 @@ func (p *Pool) PersistRuntimeState(worker *Worker) {
 	if worker == nil {
 		return
 	}
+	if worker.generation != 0 && !p.workerLifecycleOwnerCurrent(workerLifecycleOwner{worker: worker, generation: worker.generation}) {
+		logger.Debug("忽略已退役 Worker 的设备状态持久化", "device", worker.ID)
+		return
+	}
 	if resolvedBackendMode(worker.Config) == backend.BackendPCSC || (worker.Backend != nil && worker.Backend.Mode() == backend.BackendPCSC) {
 		return
 	}
@@ -2624,6 +2681,10 @@ func (p *Pool) PersistRuntimeState(worker *Worker) {
 
 func (p *Pool) PersistIdentityState(worker *Worker) {
 	if worker == nil {
+		return
+	}
+	if worker.generation != 0 && !p.workerLifecycleOwnerCurrent(workerLifecycleOwner{worker: worker, generation: worker.generation}) {
+		logger.Debug("忽略已退役 Worker 的 SIM 身份持久化", "device", worker.ID)
 		return
 	}
 

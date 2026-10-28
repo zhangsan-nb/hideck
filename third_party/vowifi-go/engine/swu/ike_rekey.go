@@ -75,7 +75,7 @@ func (s *Session) completeInitiatedIKESARekey(rekey initiatedIKERekey) error {
 	}()
 	selection, err := s.validateIKESARekeyResponse(rekey.payloads)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (response: %s)", err, createChildSAOffer(rekey.payloads))
 	}
 	sharedSecret, err := rekey.dh.ComputeSharedSecret(selection.peerKey)
 	if err != nil {
@@ -140,9 +140,25 @@ func (s *Session) completeInitiatedIKESARekey(rekey initiatedIKERekey) error {
 
 func (s *Session) handlePeerIKESARekey(packet *ikev2.IKEPacket, payloads []ikev2.Payload) error {
 	requestHeader := packetIKEHeader(packet)
+	want := map[ikev2.TransformType]ikev2.AlgorithmType{
+		ikev2.TransformTypeEncr: ikev2.AlgorithmType(s.encrAlg),
+		ikev2.TransformTypePRF:  ikev2.AlgorithmType(s.prfAlg),
+		ikev2.TransformTypeDH:   ikev2.AlgorithmType(s.dhGroup),
+	}
+	if !s.aead {
+		want[ikev2.TransformTypeInteg] = ikev2.AlgorithmType(s.integAlg)
+	}
+	payloads, proposalNum, ok := narrowPeerRekeyOffer(payloads, ikev2.ProtoIKE, want, s.encKeyBits)
+	if !ok {
+		return s.rejectPeerRekeyOffer(packet, payloads, errors.New("no proposal matches the current IKE SA suite"))
+	}
+	payloads, ok, err := s.checkPeerRekeyKE(packet, payloads, uint16(s.dhGroup))
+	if !ok || err != nil {
+		return err
+	}
 	selection, err := s.validateIKESARekeyResponse(payloads)
 	if err != nil {
-		return err
+		return s.rejectPeerRekeyOffer(packet, payloads, err)
 	}
 	dh, responderSPI, responderNonce, err := s.newIKESARekeyMaterial()
 	if err != nil {
@@ -181,6 +197,9 @@ func (s *Session) handlePeerIKESARekey(packet *ikev2.IKEPacket, payloads []ikev2
 		return errors.New("swu: no IKE proposal available for peer rekey")
 	}
 	proposals[0].SPI = append([]byte(nil), responderSPI[:]...)
+	if proposalNum != 0 {
+		proposals[0].ProposalNum = proposalNum
+	}
 	responsePayloads := []ikev2.Payload{
 		&ikev2.EncryptedPayloadSA{Proposals: proposals},
 		&ikev2.EncryptedPayloadNonce{NonceData: append([]byte(nil), responderNonce...)},

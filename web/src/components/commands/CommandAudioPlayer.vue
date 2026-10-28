@@ -11,7 +11,7 @@ import {
 } from '@vicons/fluent'
 import { commandService } from '../../services/commands'
 import type { CommandAttachment } from '../../types/commands'
-import { formatPlaybackTime, playbackProgress } from '../../utils/audioPlayback'
+import { formatPlaybackTime } from '../../utils/audioPlayback'
 
 const props = defineProps<{ attachment: CommandAttachment }>()
 const audio = ref<HTMLAudioElement | null>(null)
@@ -23,7 +23,6 @@ const currentTime = ref(0)
 const duration = ref(0)
 const volume = ref(1)
 const muted = ref(false)
-const progress = computed(() => playbackProgress(currentTime.value, duration.value))
 const silent = computed(() => muted.value || volume.value === 0)
 let controller: AbortController | null = null
 let lastAudibleVolume = 1
@@ -77,18 +76,23 @@ function updatePlaybackTime() {
   currentTime.value = audio.value?.currentTime || 0
 }
 
-function seekPlayback(event: Event) {
+function requireSingleSliderValue(value: number | number[], control: string) {
+  if (Array.isArray(value)) throw new TypeError(`${control} 不接受区间值`)
+  return value
+}
+
+function seekPlayback(value: number | number[]) {
   const player = audio.value
   if (!player) return
-  const nextTime = Number((event.target as HTMLInputElement).value)
+  const nextTime = requireSingleSliderValue(value, '录音播放进度')
   player.currentTime = nextTime
   currentTime.value = nextTime
 }
 
-function updateVolume(event: Event) {
+function updateVolume(value: number | number[]) {
   const player = audio.value
   if (!player) return
-  const nextVolume = Number((event.target as HTMLInputElement).value)
+  const nextVolume = requireSingleSliderValue(value, '录音音量')
   volume.value = nextVolume
   player.volume = nextVolume
   if (nextVolume > 0) lastAudibleVolume = nextVolume
@@ -152,48 +156,46 @@ function releaseRecording() {
     <div v-else-if="error" class="audio-state is-error" role="alert">
       <el-icon aria-hidden="true"><ErrorCircle24Regular /></el-icon>
       <span>{{ error }}</span>
-      <button type="button" class="retry-button" @click="loadRecording(attachment.recording)">重试</button>
+      <el-button class="retry-button" @click="loadRecording(attachment.recording)">重试</el-button>
     </div>
     <div v-else-if="source" class="audio-controls">
-      <button
-        type="button"
+      <el-button
+        circle
         class="audio-action is-primary"
         :aria-label="playing ? '暂停通话录音' : '播放通话录音'"
         @click="togglePlayback"
       >
         <el-icon><Pause24Regular v-if="playing" /><Play24Regular v-else /></el-icon>
-      </button>
+      </el-button>
       <time>{{ formatPlaybackTime(currentTime) }}</time>
-      <input
+      <el-slider
+        v-model="currentTime"
         class="playback-range"
-        type="range"
-        min="0"
+        :min="0"
         :max="duration || 0"
-        step="0.1"
-        :value="currentTime"
+        :step="0.1"
         :disabled="!duration"
-        :style="{ '--range-progress': `${progress}%` }"
+        :show-tooltip="false"
         aria-label="录音播放进度"
         @input="seekPlayback"
       />
       <time>{{ formatPlaybackTime(duration) }}</time>
       <div class="volume-controls">
-        <button
-          type="button"
+        <el-button
+          circle
           class="audio-action"
           :aria-label="silent ? '恢复录音声音' : '静音录音'"
           @click="toggleMuted"
         >
           <el-icon><SpeakerMute24Regular v-if="silent" /><Speaker224Regular v-else /></el-icon>
-        </button>
-        <input
+        </el-button>
+        <el-slider
+          v-model="volume"
           class="volume-range"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          :value="volume"
-          :style="{ '--range-progress': `${volume * 100}%` }"
+          :min="0"
+          :max="1"
+          :step="0.05"
+          :show-tooltip="false"
           aria-label="录音音量"
           @input="updateVolume"
         />
@@ -254,13 +256,14 @@ function releaseRecording() {
   align-items: center;
   gap: 8px;
 }
-.audio-action, .retry-button {
+.audio-action.el-button, .retry-button.el-button {
+  margin-left: 0;
   border: 1px solid var(--ui-border);
   background: transparent;
   color: var(--ui-text-muted);
   cursor: pointer;
 }
-.audio-action {
+.audio-action.el-button {
   width: 36px;
   height: 36px;
   padding: 0;
@@ -274,60 +277,20 @@ function releaseRecording() {
   color: var(--ui-primary);
 }
 .audio-action:hover, .retry-button:hover { border-color: var(--ui-primary); color: var(--ui-primary); }
-.audio-action:focus-visible, .retry-button:focus-visible, input[type="range"]:focus-visible {
+.audio-action:focus-visible, .retry-button:focus-visible {
   outline: 2px solid var(--ui-primary);
   outline-offset: 2px;
 }
 .audio-controls time { color: var(--ui-muted); font: var(--ui-font-caption) "v-mono", ui-monospace, monospace; }
 .playback-range, .volume-range {
-  --range-progress: 0%;
   min-width: 0;
   height: 36px;
   margin: 0;
-  appearance: none;
-  background: transparent;
-  cursor: pointer;
 }
-.playback-range::-webkit-slider-runnable-track, .volume-range::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(
-    to right,
-    var(--ui-primary) 0,
-    var(--ui-primary) var(--range-progress),
-    var(--ui-border) var(--range-progress),
-    var(--ui-border) 100%
-  );
-}
-.playback-range::-moz-range-track, .volume-range::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(
-    to right,
-    var(--ui-primary) 0,
-    var(--ui-primary) var(--range-progress),
-    var(--ui-border) var(--range-progress),
-    var(--ui-border) 100%
-  );
-}
-.playback-range:disabled { cursor: wait; opacity: .5; }
-.playback-range::-webkit-slider-thumb, .volume-range::-webkit-slider-thumb {
-  width: 12px;
-  height: 12px;
-  appearance: none;
-  border: 2px solid var(--ui-surface-strong);
-  border-radius: 50%;
-  background: var(--ui-primary);
-  box-shadow: 0 0 0 1px var(--ui-border);
-  margin-top: -4px;
-}
-.playback-range::-moz-range-thumb, .volume-range::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--ui-surface-strong);
-  border-radius: 50%;
-  background: var(--ui-primary);
-}
+.playback-range.is-disabled { cursor: wait; opacity: .5; }
+.playback-range :deep(.el-slider__runway), .volume-range :deep(.el-slider__runway) { height: 4px; background: var(--ui-border); }
+.playback-range :deep(.el-slider__bar), .volume-range :deep(.el-slider__bar) { height: 4px; background: var(--ui-primary); }
+.playback-range :deep(.el-slider__button), .volume-range :deep(.el-slider__button) { width: 12px; height: 12px; border: 2px solid var(--ui-surface-strong); background: var(--ui-primary); box-shadow: 0 0 0 1px var(--ui-border); }
 .volume-controls { min-width: 0; display: grid; grid-template-columns: 36px minmax(48px, 1fr); align-items: center; gap: 7px; }
 .native-audio { display: none; }
 .audio-state { min-height: 36px; color: var(--ui-text-muted); font-size: var(--ui-font-body-sm); display: flex; align-items: center; gap: 7px; }

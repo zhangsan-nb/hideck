@@ -8,9 +8,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
+// DecodePCM decodes a supported recording into mono PCM samples.
+func (t *Transcoder) DecodePCM(ctx context.Context, inputPath string) ([]int16, int, error) {
+	if t == nil {
+		return nil, 0, errors.New("audio transcoder is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return t.decodeInput(ctx, strings.TrimSpace(inputPath))
+}
+
 func (t *Transcoder) decodeInput(ctx context.Context, inputPath string) ([]int16, int, error) {
+	return t.decodeInputWithin(ctx, inputPath, 0)
+}
+
+func (t *Transcoder) decodeInputWithin(ctx context.Context, inputPath string, maxDuration time.Duration) ([]int16, int, error) {
 	data, err := os.ReadFile(inputPath)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read source recording: %w", err)
@@ -24,6 +40,7 @@ func (t *Transcoder) decodeInput(ctx context.Context, inputPath string) ([]int16
 		return decodeAMR(ctx, amrDecodeConfig{
 			decoder: decoder, data: data, frameSizes: amrNBFrameBytes[:],
 			magic: "#!AMR\n", samplesPerFrame: 160, sampleRate: 8000,
+			maxSamples: durationSampleLimit(maxDuration, 8000),
 		})
 	case ".amr-wb":
 		decoder, err := t.recordingDecoder("AMR-WB")
@@ -33,9 +50,12 @@ func (t *Transcoder) decodeInput(ctx context.Context, inputPath string) ([]int16
 		return decodeAMR(ctx, amrDecodeConfig{
 			decoder: decoder, data: data, frameSizes: amrWBFrameBytes[:],
 			magic: "#!AMR-WB\n", samplesPerFrame: 320, sampleRate: 16000,
+			maxSamples: durationSampleLimit(maxDuration, 16000),
 		})
 	case ".wav":
 		return decodePCM16WAV(data)
+	case ".mp3":
+		return decodeMP3Within(data, maxDuration)
 	case ".evs":
 		decoder, err := t.recordingDecoder("AMR-WB")
 		if err != nil {
@@ -67,6 +87,7 @@ type amrDecodeConfig struct {
 	magic           string
 	samplesPerFrame int
 	sampleRate      int
+	maxSamples      int
 }
 
 func decodeAMR(ctx context.Context, config amrDecodeConfig) ([]int16, int, error) {
@@ -82,7 +103,11 @@ func decodeAMR(ctx context.Context, config amrDecodeConfig) ([]int16, int, error
 	}
 	defer config.decoder.close(state)
 	offset := len(config.magic)
-	pcm := make([]int16, 0, len(config.data)*4)
+	capacity := len(config.data) * 4
+	if config.maxSamples > 0 && capacity > config.maxSamples {
+		capacity = config.maxSamples
+	}
+	pcm := make([]int16, 0, capacity)
 	for offset < len(config.data) {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err
@@ -101,8 +126,14 @@ func decodeAMR(ctx context.Context, config amrDecodeConfig) ([]int16, int, error
 			badFrame = 1
 		}
 		config.decoder.decode(state, config.data[offset:offset+frameLength], framePCM, badFrame)
+		if config.maxSamples > 0 && len(pcm)+len(framePCM) > config.maxSamples {
+			framePCM = framePCM[:config.maxSamples-len(pcm)]
+		}
 		pcm = append(pcm, framePCM...)
 		offset += frameLength
+		if config.maxSamples > 0 && len(pcm) >= config.maxSamples {
+			break
+		}
 	}
 	if len(pcm) == 0 {
 		return nil, 0, errors.New("AMR recording contains no audio frames")

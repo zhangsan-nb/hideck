@@ -36,6 +36,9 @@ type SMSReceived struct {
 	TargetURI          string
 	FragmentSessionKey string
 	Incomplete         bool
+	ICCID              string
+	IMSI               string
+	PersistenceResult  chan<- error
 }
 
 // SMSSent is published when an SMS is sent.
@@ -45,6 +48,9 @@ type SMSSent struct {
 	Content    string
 	Time       time.Time
 	TotalParts int
+	MessageID  string
+	ICCID      string
+	IMSI       string
 }
 
 // LocalNumberLearned is published when the local phone number is learned.
@@ -54,6 +60,7 @@ type LocalNumberLearned struct {
 	Number string
 	Source string
 	Time   time.Time
+	ICCID  string
 }
 
 // LogNotify is a log notification event.

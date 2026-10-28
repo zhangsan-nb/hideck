@@ -221,3 +221,23 @@ func resetLoggerState() {
 	global.Store(nil)
 	globalSugar.Store(nil)
 }
+
+func TestSetRoutesEngineLogsAndSurvivesInit(t *testing.T) {
+	resetLoggerState()
+	defer resetLoggerState()
+	var entries []zapcore.Entry
+	host := zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()),
+		zapcore.AddSync(io.Discard), zapcore.DebugLevel), zap.AddCaller(),
+		zap.Hooks(func(entry zapcore.Entry) error { entries = append(entries, entry); return nil }))
+	Set(host)
+	if err := Init("error", "json"); err != nil {
+		t.Fatal(err)
+	}
+	Info("routed")
+	if len(entries) != 1 || entries[0].Message != "routed" {
+		t.Fatalf("host entries = %+v, want one routed entry", entries)
+	}
+	if file := filepath.Base(entries[0].Caller.File); file != "logger_test.go" {
+		t.Fatalf("caller = %s, want logger_test.go", entries[0].Caller.File)
+	}
+}

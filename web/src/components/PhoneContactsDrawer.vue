@@ -53,7 +53,7 @@ const selecting = ref(false)
 const expanded = ref('')
 const selected = ref<string[]>([])
 const searchInput = ref<{ focus?: () => void } | null>(null)
-const nameInput = ref<HTMLInputElement | null>(null)
+const nameInput = ref<{ focus?: () => void } | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const draftName = ref('')
 const draftNumber = ref('')
@@ -259,7 +259,7 @@ function toggleAdd() {
     return
   }
   adding.value = true
-  void nextTick(() => nameInput.value?.focus())
+  void nextTick(() => nameInput.value?.focus?.())
 }
 
 function resetDraft() {
@@ -492,11 +492,11 @@ async function reload() {
     <form v-if="adding" class="picker-form" @submit.prevent="saveManual">
       <label>
         名字
-        <input ref="nameInput" v-model="draftName" name="drawer-contact-name" autocomplete="name" maxlength="64" placeholder="张三" />
+        <el-input ref="nameInput" v-model="draftName" name="drawer-contact-name" autocomplete="name" maxlength="64" placeholder="张三" />
       </label>
       <label>
         号码
-        <input
+        <el-input
           v-model="draftNumber"
           type="tel"
           inputmode="tel"
@@ -510,7 +510,7 @@ async function reload() {
       </label>
       <label v-for="(_, index) in extraNumbers" :key="index">
         号码 {{ index + 2 }}
-        <input
+        <el-input
           v-model="extraNumbers[index]"
           type="tel"
           inputmode="tel"
@@ -534,9 +534,13 @@ async function reload() {
     <div v-if="identities.contactsLoading && !identities.contacts.length" class="picker-state">正在加载联系人</div>
     <div v-else-if="groupedContacts.length" class="picker-list" role="list" @scroll.passive="onContactScroll">
       <article v-for="group in groupedContacts" :key="group.key" class="picker-item" :class="{ 'is-open': expanded === group.key }" role="listitem">
-        <label v-if="selecting" class="picker-check" @click.stop>
-          <input type="checkbox" :checked="groupSelected(group)" @change="toggleGroup(group)">
-        </label>
+        <div v-if="selecting" class="picker-check" @click.stop>
+          <el-checkbox
+            :model-value="groupSelected(group)"
+            :aria-label="`选择联系人 ${group.name}`"
+            @change="toggleGroup(group)"
+          />
+        </div>
         <button type="button" class="picker-main" :aria-label="`${selectLabel} ${group.name}`" @click="activateGroup(group)">
           <strong>{{ group.name }}</strong>
           <span v-if="group.items.length === 1">{{ group.items[0].display_number || group.items[0].number }}</span>
@@ -556,13 +560,17 @@ async function reload() {
         </template>
         <div v-if="expanded === group.key && group.items.length > 1" class="picker-numbers">
           <template v-if="selecting">
-            <label v-for="item in group.items" :key="item.number" class="picker-number is-check">
-              <input type="checkbox" :checked="selected.includes(item.number)" @change="toggleNumber(item.number)">
+            <div v-for="item in group.items" :key="item.number" class="picker-number is-check">
+              <el-checkbox
+                :model-value="selected.includes(item.number)"
+                :aria-label="`选择 ${item.display_number || item.number}`"
+                @change="toggleNumber(item.number)"
+              />
               <span>
                 {{ item.display_number || item.number }}
                 <small v-if="item.subtitle">{{ item.subtitle }}</small>
               </span>
-            </label>
+            </div>
           </template>
           <template v-else>
             <button
@@ -695,12 +703,13 @@ async function reload() {
 }
 .picker-form { padding: 0 18px 14px; display: grid; grid-template-columns: 1fr; gap: 10px; border-bottom: 1px solid var(--ui-border); flex: 0 0 auto; }
 .picker-form label { min-width: 0; display: grid; gap: 6px; color: var(--ui-text-muted); font-size: 12px; font-weight: 600; }
-.picker-form input { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 0 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md); background: var(--ui-surface); color: var(--ui-text); font-size: 14px; }
+.picker-form :deep(.el-input) { width: 100%; min-width: 0; }
+.picker-form :deep(.el-input__wrapper) { min-height: 44px; border-radius: var(--ui-radius-md); background: var(--ui-surface); }
 .picker-form button[type="submit"] { width: 100%; min-height: 44px; border: 1px solid var(--ui-primary); border-radius: var(--ui-radius-pill); background: var(--ui-primary-solid); color: #fff; cursor: pointer; font-size: 14px; font-weight: 650; }
 .picker-add-more { width: 100%; min-height: 44px; border: 1px dashed var(--ui-border); border-radius: var(--ui-radius-pill); background: transparent; color: var(--ui-text-muted); cursor: pointer; font-size: 13px; }
 .picker-form button:disabled { cursor: not-allowed; opacity: .45; }
 .picker-number.is-check { grid-template-columns: auto minmax(0, 1fr); align-items: center; }
-.picker-number.is-check input { width: 18px; height: 18px; }
+.picker-number.is-check :deep(.el-checkbox) { min-width: 32px; min-height: 32px; margin-right: 0; }
 .picker-number.is-add { color: var(--ui-primary); justify-items: start; }
 .picker-form small { color: var(--ui-danger); font-size: 12px; }
 .picker-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
@@ -718,7 +727,7 @@ async function reload() {
 .picker-load-more { cursor: pointer; }
 .picker-item { min-height: 64px; padding: 8px 8px 8px 18px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; border-bottom: 1px solid var(--ui-border-muted); transition: background-color 120ms ease; }
 .picker-check { width: 44px; height: 44px; display: grid; place-items: center; }
-.picker-check input { width: 18px; height: 18px; }
+.picker-check :deep(.el-checkbox) { margin-right: 0; }
 .picker-numbers { flex: 1 1 100%; display: grid; gap: 6px; padding: 4px 40px 8px 0; }
 .picker-number { min-height: 44px; padding: 8px 12px; display: grid; gap: 2px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-md); background: var(--ui-surface); color: inherit; text-align: left; cursor: pointer; }
 .picker-number span { font-family: "v-mono", monospace; font-size: 13px; color: var(--ui-text); }

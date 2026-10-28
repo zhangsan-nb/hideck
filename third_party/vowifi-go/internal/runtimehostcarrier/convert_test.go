@@ -24,6 +24,18 @@ func TestEffectiveCarrierConfigRoundTrip(t *testing.T) {
 	}
 }
 
+// The round trip only proves fields the fixture sets, so a new template
+// field must be populated here before the round trip can catch a drop.
+func TestPopulatedTemplateSetsEveryField(t *testing.T) {
+	value := reflect.ValueOf(populatedTemplate("all"))
+	for i := 0; i < value.NumField(); i++ {
+		field := value.Type().Field(i)
+		if field.IsExported() && value.Field(i).IsZero() {
+			t.Errorf("populatedTemplate leaves %s unset", field.Name)
+		}
+	}
+}
+
 func TestConversionsOwnNestedSlices(t *testing.T) {
 	source := populatedCarrierConfig()
 	internal := ToInternal(source)
@@ -93,7 +105,7 @@ func populatedCarrierConfig() carrier.EffectiveCarrierConfig {
 		IMSIdentitySource: "isim", IMSLocalPort: 5060, IMSTCPKeepaliveSeconds: 40,
 		IMSOptionsPingIntervalSeconds: 50, DPDKeepaliveIntervalSeconds: 60,
 		ReauthIntervalSeconds: 70, IKERekeyIntervalSeconds: 80,
-		WithholdDeviceIdentity: true, KeepChildSAOnRekeyDecline: true,
+		WithholdDeviceIdentity: true, KeepChildSAOnRekeyDecline: true, DeferPeerChildRekeySwitch: true,
 		IMSRegisterTemplate:     populatedTemplate("flattened"),
 		IMSRegisterPolicySource: "preset", SMSRoutingMethod: "sip", SMSRoutingGW: "gw.example",
 		ForceSMSCAuth: true, IMS: populatedTemplate("compatibility"),
@@ -113,8 +125,8 @@ func populatedTemplate(id string) carrier.IMSRegisterTemplate {
 		SecurityClientMechanisms: []carrier.IPSec3GPPSecurityMechanism{
 			{Alg: "hmac-md5-96", EAlg: "aes-cbc", Prot: "esp", Mode: "trans"},
 		},
-		StrictSecurityServerOffer: true, EnableInitialRejectFallback: true,
-		FallbackIncludesServerParamsInSecCl: true,
+		StrictSecurityServerOffer: true, AcceptRegisterContactWithoutUser: true, RPReportOverPortUS: true,
+		EnableInitialRejectFallback: true, FallbackIncludesServerParamsInSecCl: true,
 		RegisterPolicy: carrier.IMSRegisterPolicy{
 			ID: "register", TemporaryStatusCodes: []int{408, 500}, ForbiddenStatusCodes: []int{403},
 			InitialRejectFallbackStatusCodes: []int{404, 488}, TemporaryRetrySeconds: 15,

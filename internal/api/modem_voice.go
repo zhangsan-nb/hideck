@@ -7,7 +7,7 @@ import (
 	"github.com/yibaiba/hideck/internal/device"
 )
 
-func (s *Server) allowModemVoiceModeChange(c *gin.Context, id, nextMode string) bool {
+func (s *Server) allowModemVoiceModeChange(c businessContext, id, nextMode string) bool {
 	if s.pool == nil || s.pool.ModemVoiceController() == nil {
 		return true
 	}

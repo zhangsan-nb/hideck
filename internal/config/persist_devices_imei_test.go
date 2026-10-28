@@ -8,7 +8,16 @@ import (
 
 func TestDeleteDeviceInFileRemovesAndIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	raw := "devices:\n- id: wwan0\n  device_backend: qmi\n  modem_imei: \"860000000001001\"\n- id: wwan1\n  device_backend: qmi\n"
+	raw := `devices:
+- id: wwan0
+  device_backend: qmi
+  modem_imei: "860000000001001"
+- id: wwan1
+  device_backend: qmi
+notification_device_filters:
+  telegram: [wwan0, wwan1]
+  bark: [wwan0]
+`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -24,6 +33,13 @@ func TestDeleteDeviceInFileRemovesAndIsIdempotent(t *testing.T) {
 	}
 	if got, _ := GetDeviceByID("wwan1"); got == nil {
 		t.Fatal("wwan1 was removed with wwan0")
+	}
+	filters := GetConfig().NotificationDeviceFilters
+	if got := filters["telegram"]; len(got) != 1 || got[0] != "wwan1" {
+		t.Fatalf("telegram filter = %v, want [wwan1]", got)
+	}
+	if got := filters["bark"]; len(got) != 1 || got[0] != "wwan0" {
+		t.Fatalf("bark filter = %v, want restrictive tombstone [wwan0]", got)
 	}
 	if err := DeleteDeviceInFile(path, "wwan0"); err != nil {
 		t.Fatalf("second DeleteDeviceInFile() error = %v", err)

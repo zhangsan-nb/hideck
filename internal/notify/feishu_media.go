@@ -64,6 +64,29 @@ func (f *FeishuChannel) sendRecording(msg *larkim.EventMessage, attachment Comma
 	if chatID == "" {
 		return errors.New("飞书会话缺少 Chat ID")
 	}
+	return f.sendRecordingToChat(chatID, attachment)
+}
+
+func (f *FeishuChannel) SendNotificationWithAttachments(ctx NotificationContext, attachments []CommandAttachment) error {
+	chatIDs := f.notificationChatIDs()
+	if len(chatIDs) == 0 {
+		return errors.New("飞书还没有绑定 Chat ID，请先给这个机器人发一条消息")
+	}
+	var sendErrors []error
+	for _, chatID := range chatIDs {
+		for _, attachment := range attachments {
+			if err := f.sendRecordingToChat(chatID, attachment); err != nil {
+				sendErrors = append(sendErrors, err)
+			}
+		}
+		if err := f.sendToChat(chatID, ctx.Text); err != nil {
+			sendErrors = append(sendErrors, err)
+		}
+	}
+	return errors.Join(sendErrors...)
+}
+
+func (f *FeishuChannel) sendRecordingToChat(chatID string, attachment CommandAttachment) error {
 	plan, err := f.prepareFeishuSend(attachment)
 	if err != nil {
 		return err
@@ -81,7 +104,7 @@ func (f *FeishuChannel) sendRecording(msg *larkim.EventMessage, attachment Comma
 	if err != nil {
 		return err
 	}
-	return media.SendMedia(context.Background(), chatID, fileKey, plan.msgType)
+	return media.SendMedia(context.Background(), strings.TrimSpace(chatID), fileKey, plan.msgType)
 }
 
 func (f *FeishuChannel) prepareFeishuSend(attachment CommandAttachment) (feishuSendPlan, error) {

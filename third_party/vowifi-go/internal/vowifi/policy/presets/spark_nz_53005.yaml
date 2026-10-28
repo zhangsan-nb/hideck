@@ -6,9 +6,11 @@ device_model: iphone15,4
 dpd_interval_seconds: 600
 withhold_device_identity: true
 keep_child_sa_on_rekey_decline: true
+defer_peer_child_rekey_switch: true
 ike_proposals:
   - aes256-sha256-prfsha256-modp2048
 esp_proposals:
+  - aes256-sha1
   - aes256-sha256
 ims_domain: ims.mnc005.mcc530.3gppnetwork.org
 ims_realm: ims.mnc005.mcc530.3gppnetwork.org

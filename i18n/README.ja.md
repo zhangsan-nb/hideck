@@ -37,6 +37,16 @@ USB モデム、セルラープロキシ、SMS、WiFi calling / IMS 音声、eSI
 
 プロトコル：[VoWiFi](../docs/vowifi-protocol-alignment.md) · [VoLTE](../docs/volte-native.md) · [事業者](../docs/operator-notes.md) · [ハードウェア](../docs/modem-hardware.md)
 
+## MCP / AI アシスタント
+
+HiDeck は、デバイス、ネットワーク、SMS、連絡先、電話、eSIM、MBN、プロキシ、コマンド、残高、タスク、診断を扱う 125 個の MCP ツールを提供します。サービスは初期状態では無効です。設定の「MCP 接入」で有効にし、専用トークンを作成してください。トークンの平文は作成時に一度だけ表示されます。
+
+Codex、Claude Code、Cursor、Gemini CLI、Hermes Agent、DeepSeek dsh、Pi Agent、Grok Build の設定テンプレートを用意しています。設定をコピーするか、「复制给 Agent」でローカル設定を変更できる Agent に渡してください。既存の HiDeck に Streamable HTTP で接続するため、Agent 側に別の HiDeck MCP サーバーをインストールする必要はありません。
+
+接続先は `http://YOUR_IP:7575/mcp` または HTTPS の同じパスです。トークンは公開されている全業務機能への権限を持ち、設定で失効・削除できます。ブラウザ音声を使う通話操作では、電話ページの「连接 MCP」でトークンを承認し、ページを開いたままにしてください。
+
+設定手順、音声要件、診断、対応範囲は [MCP ガイド](../docs/mcp.md)（中国語）を参照してください。
+
 ## クイックスタート
 
 Docker を推奨します。Linux、curl、Docker Compose、ホストネットワーク、USB アクセスが必要です。イメージには通話録音用の AMR/MP3 ライブラリが含まれます。
@@ -89,18 +99,18 @@ curl -fsSL https://raw.githubusercontent.com/yibaiba/hideck/main/deploy-binary.s
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yibaiba/hideck/main/deploy-binary.sh | \
   HIDECK_DIR=/opt/hideck \
-  HIDECK_VERSION=v2.1.23 \
+  HIDECK_VERSION=v2.1.35 \
   HIDECK_ARCH=linux_amd64 sh
 ```
 
 | ファイル | 対象 |
 | --- | --- |
-| `hideck_v2.1.23_linux_amd64` | x86_64、glibc + UPX |
-| `hideck_v2.1.23_linux_arm64` | ARM64 / Raspberry Pi OS 64-bit、glibc + UPX |
-| `hideck_v2.1.23_linux_armv7` | 32-bit ARM、glibc + UPX |
-| `hideck_v2.1.23_openwrt_amd64` | OpenWrt x86_64、musl 静的、UPX なし |
-| `hideck_v2.1.23_openwrt_arm64` | OpenWrt aarch64 |
-| `hideck_v2.1.23_openwrt_armv7` | OpenWrt 32-bit ARM |
+| `hideck_v2.1.35_linux_amd64` | x86_64、glibc + UPX |
+| `hideck_v2.1.35_linux_arm64` | ARM64 / Raspberry Pi OS 64-bit、glibc + UPX |
+| `hideck_v2.1.35_linux_armv7` | 32-bit ARM、glibc + UPX |
+| `hideck_v2.1.35_openwrt_amd64` | OpenWrt x86_64、musl 静的、UPX なし |
+| `hideck_v2.1.35_openwrt_arm64` | OpenWrt aarch64 |
+| `hideck_v2.1.35_openwrt_armv7` | OpenWrt 32-bit ARM |
 
 OpenWrt では `openwrt_*` のみを使ってください。[packaging/openwrt/README.md](../packaging/openwrt/README.md) を参照。
 

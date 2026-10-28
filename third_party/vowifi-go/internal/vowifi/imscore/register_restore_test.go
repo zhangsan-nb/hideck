@@ -134,7 +134,7 @@ func TestParseRecoveredRegisterResponseFields(t *testing.T) {
 		"Expires": "3600", "Contact": "<sip:a@example>;expires=120",
 		"Retry-After": "9", "Min-Expires": "600",
 	}}
-	if got, err := registrationExpires(response, "<sip:a@example>", 10*time.Second); err != nil || got != 120*time.Second {
+	if got, err := registrationExpires(response, "<sip:a@example>", 10*time.Second, false); err != nil || got != 120*time.Second {
 		t.Fatalf("registrationExpires = %s, %v", got, err)
 	}
 	retryAfter, retryAfterSet, minExpires := parseRegisterRetryHintsFromResponse(response)

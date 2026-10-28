@@ -13,48 +13,54 @@ import (
 )
 
 type FakeModem struct {
-	mu            sync.Mutex
-	ID            string
-	Port          string
-	IMEI          string
-	IMS           int
-	VoLTE         int
-	USB           []string
-	AutoSel       int
-	MBN           []MBNEntry
-	FailIMS11     bool
-	Fail          map[string]error
-	ListTimeouts  int
-	Commands      []string
-	PendingUAC    *int
-	NextID        string
-	NextPort      string
-	UACImmediate  bool
-	Audio         string
-	StopIMS       int
-	SetNative     int
-	EnsureErr     error
-	EnsureCount   int
-	ReleaseCount  int
-	imsRegHandler func(*qmi.IMSARegistrationStatus)
-	imsSvcHandler func(*qmi.IMSAServicesStatus)
-	voiceHandler  func(*qmi.VoiceAllCallInfo)
-	allCalls      *qmi.VoiceAllCallInfo
-	Reg           Registration
-	RegErr        error
-	COPS          string
-	CEREG         int
-	imsCID        int
-	imsActive     bool
-	hangupErr     error
-	dialVoice     *qmi.VoiceAllCallInfo
-	UACUnusable   bool
-	manageCalls   []qmi.VoiceManageCallsRequest
-	manageErrs    []error
-	dtmfActions   []string
-	burstDTMFErr  error
-	startDTMFErr  error
-	stopDTMFErr   error
+	mu                    sync.Mutex
+	ID                    string
+	Port                  string
+	IMEI                  string
+	IMS                   int
+	VoLTE                 int
+	USB                   []string
+	AutoSel               int
+	MBN                   []MBNEntry
+	FailIMS11             bool
+	Fail                  map[string]error
+	ListTimeouts          int
+	Commands              []string
+	PendingUAC            *int
+	NextID                string
+	NextPort              string
+	UACImmediate          bool
+	Audio                 string
+	StopIMS               int
+	SetNative             int
+	EnsureErr             error
+	EnsureCount           int
+	VoiceEnsureErr        error
+	VoiceEnsureCount      int
+	VoiceSubscribeErr     error
+	VoiceUnsubscribeCount int
+	ReleaseCount          int
+	imsRegHandler         func(*qmi.IMSARegistrationStatus)
+	imsSvcHandler         func(*qmi.IMSAServicesStatus)
+	IMSUnsubscribeCount   int
+	voiceHandler          func(*qmi.VoiceAllCallInfo)
+	allCalls              *qmi.VoiceAllCallInfo
+	Reg                   Registration
+	RegErr                error
+	COPS                  string
+	CEREG                 int
+	imsCID                int
+	imsActive             bool
+	hangupErr             error
+	dialVoice             *qmi.VoiceAllCallInfo
+	DialCount             int
+	UACUnusable           bool
+	manageCalls           []qmi.VoiceManageCallsRequest
+	manageErrs            []error
+	dtmfActions           []string
+	burstDTMFErr          error
+	startDTMFErr          error
+	stopDTMFErr           error
 }
 
 func newFakeModem() *FakeModem {
@@ -247,23 +253,40 @@ func (f *FakeModem) EnsureIMSClients(context.Context, string) error {
 	f.EnsureCount++
 	return f.EnsureErr
 }
+func (f *FakeModem) EnsureVoiceIndications(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.VoiceEnsureCount++
+	return f.VoiceEnsureErr
+}
 func (f *FakeModem) ReleaseIMSClients(string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ReleaseCount++
 	return nil
 }
-func (f *FakeModem) OnIMSRegistration(_ string, handler func(*qmi.IMSARegistrationStatus)) error {
+func (f *FakeModem) SubscribeIMSRegistration(_ string, handler func(*qmi.IMSARegistrationStatus)) (func(), error) {
 	f.mu.Lock()
 	f.imsRegHandler = handler
 	f.mu.Unlock()
-	return nil
+	return f.imsUnsubscribe(func() { f.imsRegHandler = nil }), nil
 }
-func (f *FakeModem) OnIMSServices(_ string, handler func(*qmi.IMSAServicesStatus)) error {
+func (f *FakeModem) SubscribeIMSServices(_ string, handler func(*qmi.IMSAServicesStatus)) (func(), error) {
 	f.mu.Lock()
 	f.imsSvcHandler = handler
 	f.mu.Unlock()
-	return nil
+	return f.imsUnsubscribe(func() { f.imsSvcHandler = nil }), nil
+}
+func (f *FakeModem) imsUnsubscribe(clear func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			clear()
+			f.IMSUnsubscribeCount++
+			f.mu.Unlock()
+		})
+	}
 }
 func (f *FakeModem) fireIMSRegistration(info *qmi.IMSARegistrationStatus) {
 	f.mu.Lock()
@@ -285,6 +308,7 @@ func (f *FakeModem) AudioDevice(string) string {
 func (f *FakeModem) USBAudioUnusable(string) bool { return f.UACUnusable }
 func (f *FakeModem) VOICEDial(context.Context, string, string) (uint8, error) {
 	f.mu.Lock()
+	f.DialCount++
 	info := f.dialVoice
 	f.mu.Unlock()
 	if info != nil {
@@ -327,11 +351,26 @@ func (f *FakeModem) VOICEStopContinuousDTMF(_ context.Context, _ string, callID 
 	f.dtmfActions = append(f.dtmfActions, fmt.Sprintf("stop:%d", callID))
 	return f.stopDTMFErr
 }
-func (f *FakeModem) OnVoiceStatus(_ string, handler func(*qmi.VoiceAllCallInfo)) error {
+func (f *FakeModem) SubscribeVoiceStatus(_ string, handler func(*qmi.VoiceAllCallInfo)) (func(), error) {
 	f.mu.Lock()
+	if f.VoiceSubscribeErr != nil {
+		err := f.VoiceSubscribeErr
+		f.mu.Unlock()
+		return nil, err
+	}
 	f.voiceHandler = handler
 	f.mu.Unlock()
-	return nil
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			if f.voiceHandler != nil {
+				f.voiceHandler = nil
+			}
+			f.VoiceUnsubscribeCount++
+			f.mu.Unlock()
+		})
+	}, nil
 }
 func (f *FakeModem) VOICEGetAllCallInfo(context.Context, string) (*qmi.VoiceAllCallInfo, error) {
 	f.mu.Lock()

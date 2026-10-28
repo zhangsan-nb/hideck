@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,18 @@ import (
 	"github.com/yibaiba/hideck/internal/phone"
 	"gorm.io/gorm"
 )
+
+func newVoiceCallTestStore(t *testing.T) *VoiceCallStore {
+	t.Helper()
+	database, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "calls.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&VoiceCallRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	return NewVoiceCallStore(database)
+}
 
 func TestVoiceCallStoreUpsertsAndListsNewestFirst(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "calls.db")), &gorm.Config{})
@@ -129,5 +142,76 @@ func TestVoiceCallStoreKeepsBothRecordsWhenQMISlotIsReused(t *testing.T) {
 	}
 	if records[1].Status != phone.StatusRejected || records[1].Peer != "13200000002" {
 		t.Fatalf("first inbound overwritten: %+v", records[1])
+	}
+}
+
+func TestVoiceCallStoreDeletesSelectedFinishedRecords(t *testing.T) {
+	store := newVoiceCallTestStore(t)
+	ctx := context.Background()
+	for _, callID := range []string{"keep", "delete-one", "delete-two"} {
+		if err := store.Upsert(ctx, phone.CallRecord{
+			CallID: callID, DeviceID: "wwan0", Direction: "outbound",
+			Status: phone.StatusCompleted, StartedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := store.List(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uint64, 0, 2)
+	for _, record := range records {
+		if record.CallID != "keep" {
+			ids = append(ids, record.ID)
+		}
+	}
+	deleted, err := store.Delete(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deleted = %d, want 2", len(deleted))
+	}
+	remaining, err := store.List(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].CallID != "keep" {
+		t.Fatalf("remaining = %+v", remaining)
+	}
+}
+
+func TestVoiceCallStoreRejectsBatchContainingActiveRecord(t *testing.T) {
+	store := newVoiceCallTestStore(t)
+	ctx := context.Background()
+	for callID, status := range map[string]string{
+		"finished": phone.StatusCompleted,
+		"active":   phone.StatusConnected,
+	} {
+		if err := store.Upsert(ctx, phone.CallRecord{
+			CallID: callID, DeviceID: "wwan0", Direction: "outbound",
+			Status: status, StartedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := store.List(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uint64, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.ID)
+	}
+	if _, err := store.Delete(ctx, ids); !errors.Is(err, phone.ErrActiveCallHistoryDelete) {
+		t.Fatalf("Delete error = %v", err)
+	}
+	remaining, err := store.List(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("remaining = %d, want 2", len(remaining))
 	}
 }

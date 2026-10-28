@@ -154,6 +154,96 @@ func TestBeginLebaraUKIdentityRecoverCapsAutoAttempts(t *testing.T) {
 	}
 }
 
+func TestLebaraUKIdentityRecoverOldRunCannotMutateReplacement(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	oldWorker := &Worker{ID: "dev-1"}
+	oldWorker.state.Identity.ICCID = "8944000000000000087"
+	p.assignWorkerGeneration(oldWorker)
+	p.workers[oldWorker.ID] = oldWorker
+	if !p.beginLebaraUKIdentityRecover(oldWorker, "", false) {
+		t.Fatal("begin old recovery")
+	}
+	oldRun := p.currentLebaraUKIdentityRecover(oldWorker.ID)
+	p.cancelWorkerLifecycleTimers(oldWorker.ID)
+
+	newWorker := &Worker{ID: oldWorker.ID}
+	newWorker.state.Identity.ICCID = "8944000000000000087"
+	p.assignWorkerGeneration(newWorker)
+	p.workers[newWorker.ID] = newWorker
+	if !p.beginLebaraUKIdentityRecover(newWorker, "", false) {
+		t.Fatal("begin replacement recovery")
+	}
+	newRun := p.currentLebaraUKIdentityRecover(newWorker.ID)
+	p.finishLebaraUKIdentityRecoverFailedForRun(oldWorker.ID, oldRun, errors.New("stale failure"))
+	if p.clearLebaraUKIdentityRecoverRun(oldWorker.ID, oldRun) {
+		t.Fatal("old recovery cleared replacement state")
+	}
+	effectRan := false
+	if p.runLebaraUKIdentityOwnerEffect(oldRun, false, func() { effectRan = true }) || effectRan {
+		t.Fatal("old recovery executed an effect for the replacement worker")
+	}
+
+	if oldRun.ctx.Err() == nil {
+		t.Fatal("old recovery context was not canceled")
+	}
+	if current := p.currentLebaraUKIdentityRecover(newWorker.ID); current != newRun || !current.InFlight {
+		t.Fatalf("replacement recovery was changed by old run: %+v", current)
+	}
+}
+
+func TestBeginLebaraUKIdentityRecoverCreatesNewRunState(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	worker := &Worker{ID: "dev-1"}
+	worker.state.Identity.ICCID = "8944000000000000087"
+	p.assignWorkerGeneration(worker)
+	p.workers[worker.ID] = worker
+	if !p.beginLebaraUKIdentityRecover(worker, "", false) {
+		t.Fatal("begin first recovery")
+	}
+	first := p.currentLebaraUKIdentityRecover(worker.ID)
+	p.lebaraRecoverMu.Lock()
+	first.InFlight = false
+	p.lebaraRecoverMu.Unlock()
+	if !p.beginLebaraUKIdentityRecover(worker, "", true) {
+		t.Fatal("begin manual recovery")
+	}
+	second := p.currentLebaraUKIdentityRecover(worker.ID)
+	if first == second {
+		t.Fatal("new recovery reused mutable state from the completed run")
+	}
+	if first.ctx.Err() == nil {
+		t.Fatal("first recovery context was not canceled")
+	}
+}
+
+func TestBeginLebaraUKIdentityRecoverRunStaysBoundToCreatingWorker(t *testing.T) {
+	p := NewPool(&config.Config{})
+	defer p.cancel()
+	oldWorker := &Worker{ID: "dev-1"}
+	oldWorker.state.Identity.ICCID = "8944000000000000087"
+	p.assignWorkerGeneration(oldWorker)
+	p.workers[oldWorker.ID] = oldWorker
+	oldRun := p.beginLebaraUKIdentityRecoverRun(oldWorker, "", false)
+	if oldRun == nil {
+		t.Fatal("begin old recovery")
+	}
+	p.cancelWorkerLifecycleTimers(oldWorker.ID)
+
+	newWorker := &Worker{ID: oldWorker.ID}
+	newWorker.state.Identity.ICCID = "8944000000000000087"
+	p.assignWorkerGeneration(newWorker)
+	p.workers[newWorker.ID] = newWorker
+	newRun := p.beginLebaraUKIdentityRecoverRun(newWorker, "", false)
+	if newRun == nil {
+		t.Fatal("begin replacement recovery")
+	}
+	if oldRun == newRun || oldRun.owner.worker != oldWorker || newRun.owner.worker != newWorker {
+		t.Fatalf("recovery ownership crossed workers: old=%+v new=%+v", oldRun.owner, newRun.owner)
+	}
+}
+
 func TestRecoverLebaraUKIdentityOnceSelfCycleThenVoWiFi(t *testing.T) {
 	withFastLebaraUKIdentityWait(t)
 	p := NewPool(&config.Config{})
@@ -202,8 +292,14 @@ func TestRecoverLebaraUKIdentityOnceSelfCycleThenVoWiFi(t *testing.T) {
 	})
 
 	var got []string
+	startPolicyLockAvailable := false
 	p.voWiFiHost().LifecycleControllerForTest().TestRun = func(ctx context.Context, cmd vowifihost.LifecycleCommand) error {
 		got = append(got, cmd.Kind.String())
+		transition := p.policyTransitionFor(w.ID)
+		startPolicyLockAvailable = transition.TryLock()
+		if startPolicyLockAvailable {
+			transition.Unlock()
+		}
 		return nil
 	}
 
@@ -219,6 +315,9 @@ func TestRecoverLebaraUKIdentityOnceSelfCycleThenVoWiFi(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"enable"}) {
 		t.Fatalf("vowifi commands=%v", got)
+	}
+	if !startPolicyLockAvailable {
+		t.Fatal("VoWiFi enable ran while the device policy transition lock was held")
 	}
 	if !IsLebaraUKHomeIMSI(w.GetCachedIMSI()) {
 		t.Fatalf("cached IMSI=%q", w.GetCachedIMSI())

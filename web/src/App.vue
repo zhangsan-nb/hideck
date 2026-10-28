@@ -208,9 +208,8 @@ function retryStartup() {
               </p>
               
               <div class="mb-5">
-                <input 
-                  type="text" 
-                  v-model="confirmText" 
+                <el-input
+                  v-model="confirmText"
                   class="license-input w-full px-4 py-3 text-center text-sm font-semibold outline-none transition-all"
                   :placeholder="t('disclaimer.placeholder', { phrase: expectedConfirmText })"
                   @paste.prevent
@@ -223,10 +222,11 @@ function retryStartup() {
               </p>
 
               <div class="flex gap-4">
-                <button @click="rejectDisclaimer" class="license-reject flex-1 px-4 py-3 text-sm font-bold transition-colors">
+                <el-button class="license-reject flex-1 px-4 py-3 text-sm font-bold transition-colors" @click="rejectDisclaimer">
                   {{ t('disclaimer.reject') }}
-                </button>
-                <button 
+                </el-button>
+                <el-button
+                  type="primary"
                   @click="acceptDisclaimer" 
                   :disabled="!canAccept"
                   :class="[
@@ -237,7 +237,7 @@ function retryStartup() {
                   ]"
                 >
                   {{ acceptingDisclaimer ? t('common.loading') : t('disclaimer.accept') }}
-                </button>
+                </el-button>
               </div>
             </div>
           </div>
@@ -300,19 +300,29 @@ function retryStartup() {
 }
 
 .license-input {
-  border: 1px solid var(--ui-border);
-  border-radius: 16px;
-  background: var(--ui-surface-subtle);
-  color: var(--ui-text);
+  padding: 0;
 }
 
-.license-input:focus {
-  border-color: var(--ui-primary);
+.license-input .el-input__wrapper {
+  min-height: 44px;
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface-subtle);
+  box-shadow: 0 0 0 1px var(--ui-border) inset;
+}
+
+.license-input .el-input__wrapper.is-focus {
   box-shadow: var(--ui-focus);
+}
+
+.license-input .el-input__inner {
+  color: var(--ui-text);
+  text-align: center;
 }
 
 .license-reject,
 .license-accept {
+  min-height: 44px;
+  margin-left: 0;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-pill);
 }

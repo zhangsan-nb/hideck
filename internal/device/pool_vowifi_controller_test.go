@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iniwex5/vowifi-go/runtimehost"
 	"github.com/yibaiba/hideck/internal/apduarbiter"
 	"github.com/yibaiba/hideck/internal/backend"
 	"github.com/yibaiba/hideck/internal/cardpolicy"
 	"github.com/yibaiba/hideck/internal/config"
 	"github.com/yibaiba/hideck/internal/vowifihost"
 	"github.com/yibaiba/hideck/pkg/logger"
-	"github.com/iniwex5/vowifi-go/runtimehost"
 )
 
 func newVoWiFiLifecycleControllerForTest(p *Pool) *vowifihost.LifecycleController {
@@ -150,8 +150,10 @@ func TestDuplicateEnableDoesNotInvalidateActiveVoWiFiLifecycleSink(t *testing.T)
 
 	p.voWiFiRuntimeStore().SetInstance(deviceID, &runtimehost.Instance{})
 
-	if err := p.EnableVoWiFi(deviceID); err != nil {
-		t.Fatalf("EnableVoWiFi() duplicate active error = %v", err)
+	for _, commandGeneration := range []uint64{0, generation} {
+		if err := p.enableVoWiFi(deviceID, commandGeneration); err != nil {
+			t.Fatalf("enableVoWiFi() duplicate active generation=%d error = %v", commandGeneration, err)
+		}
 	}
 	if current := p.voWiFiHost().CurrentLifecycleGeneration(deviceID); current != generation {
 		t.Fatalf("current generation = %d, want unchanged active generation %d", current, generation)
@@ -160,7 +162,8 @@ func TestDuplicateEnableDoesNotInvalidateActiveVoWiFiLifecycleSink(t *testing.T)
 
 func TestEnableVoWiFiWhenReadySubmitsControllerCommand(t *testing.T) {
 	p := NewPool(&config.Config{})
-	p.workers["dev-1"] = &Worker{ID: "dev-1", Backend: &esimSwitchRestoreBackendStub{mode: backend.BackendQMI, getMode: backend.ModeOnline}}
+	worker := &Worker{ID: "dev-1", Backend: &esimSwitchRestoreBackendStub{mode: backend.BackendQMI, getMode: backend.ModeOnline}}
+	p.AttachWorkerForTest(worker)
 
 	var got []string
 	p.voWiFiHost().LifecycleControllerForTest().TestRun = func(ctx context.Context, cmd vowifihost.LifecycleCommand) error {
@@ -168,7 +171,8 @@ func TestEnableVoWiFiWhenReadySubmitsControllerCommand(t *testing.T) {
 		return nil
 	}
 
-	if err := p.enableVoWiFiWhenReady("dev-1", -time.Nanosecond, "test"); err != nil {
+	start := p.captureVoWiFiReadyStart(worker)
+	if err := p.enableVoWiFiWhenReady(start, -time.Nanosecond, "test"); err != nil {
 		t.Fatalf("enableVoWiFiWhenReady() error = %v", err)
 	}
 
