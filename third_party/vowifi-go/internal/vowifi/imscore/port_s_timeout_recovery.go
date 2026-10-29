@@ -140,6 +140,7 @@ func (s *Service) confirmPortSTimeoutDownlinkLocked(peer net.Conn) bool {
 		state.downlinkProven = true
 		state.validationFailed = false
 		s.portSRecoveryAwaitingFlow.Store(false)
+		s.portSTimeoutAwaitEntered.Store(false)
 		s.portSReconnectWaiting.Store(false)
 		s.resetPortSRecoveryBackoff()
 	}

@@ -10,7 +10,7 @@ import (
 
 func TestOriginalCarrierPresetAssetsRemainExact(t *testing.T) {
 	wantHashes := map[string]string{
-		"2degrees_nz_53024.yaml":   "361779ed5f41ae506d96d7595b66c9524717bc7a12e1d8dda2ba1875ca778808",
+		"2degrees_nz_53024.yaml":   "e90a9605c10f3c69c79a3fce53ccfa5e0b80b0b4bbb43de6261997f740833a17",
 		"ais_th_52001.yaml":        "f02b536317933c00c1960bfcceaf1b3f2ec8e22e1106917854231953832ccaa0",
 		"ais_th_52003.yaml":        "7b7c444a9c641d19c9ea184997c27c24eacc52d6b31db729b448fe9e1f50d0fd",
 		"att_310280.yaml":          "7337399037af7fbe67874b83f8f0c95ff0a1c588ec49ee41a404cf33e04fd054",
@@ -19,7 +19,7 @@ func TestOriginalCarrierPresetAssetsRemainExact(t *testing.T) {
 		"cmhk_45413.yaml":          "c7bc2f772644f110cce24b1e49dedde1ddcf12d2420400e8b7bf39467e08e690",
 		"csl_454000.yaml":          "250f9ec40e6c6a4203a5f29063491317c96276753c42980dd37c491f7d3cfc56",
 		"cteuk_23433.yaml":         "52ec96bdca5e6e789862f47d9200eb5de3ddacd103c3374882898c8ec8b74517",
-		"dito_51566.yaml":          "0dc72630e458248d2c70c2d07ebe6b839fce3f98676c9d2eb2409855cbc67b91",
+		"dito_51566.yaml":          "529cb896a1cf83503c1d24fc5dec3416af668fb7f6bd20fc70fa2748103248ed",
 		"docomo_44010.yaml":        "19281f52cf4cbbdd6973be63704b7d9438088a4fefa5d6e96ec9c112286dacdb",
 		"ee_uk_23430.yaml":         "cae2b7373401f83ad468bdc4bee3129520d33cbaadcdda5b461d9011d427e0dc",
 		"ee_uk_23431.yaml":         "6ce981d9065cfcba1beb69385ffda4e3305aec6878fcc0ed3f3b9847f0176b5a",

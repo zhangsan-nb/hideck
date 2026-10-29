@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unsafe"
 
@@ -1540,55 +1541,63 @@ func TestHandleESIMSwitchAfterMarksDegradedWhenTargetICCIDStaysOld(t *testing.T)
 }
 
 func TestHandleESIMSwitchAfterStillConvergesIdentityWhenControlUnavailable(t *testing.T) {
-	withImmediatePostSwitchIdentityRetries(t)
-	withFastPostSwitchIdentityPolling(t)
-	p := NewPool(&config.Config{})
-	defer p.cancel()
-	deviceID := "dev-1"
-	be := &esimSwitchRestoreBackendStub{
-		mode:      backend.BackendQMI,
-		getMode:   backend.ModeOnline,
-		liveICCID: "target-iccid",
-		liveIMSI:  "target-imsi",
-		uimReadiness: []qmimanager.UIMReadiness{{
-			TransportReady: false,
-			ControlReady:   false,
-			Reason:         qmimanager.UIMReadinessControlUnavailable,
-		}},
-	}
-	w := &Worker{
-		ID:      deviceID,
-		Config:  config.DeviceConfig{ID: deviceID, VoWiFiEnabled: false},
-		Backend: be,
-	}
-	w.cacheMu.Lock()
-	w.state.Identity.ICCID = "old-iccid"
-	w.state.Identity.IMSI = "old-imsi"
-	w.state.Identity.Ready = true
-	w.cacheMu.Unlock()
-	p.workers[deviceID] = w
-	withSwitchSnapshot(p, deviceID, esimSwitchContext{
-		ICCIDBefore: "old-iccid",
-		IMSIBefore:  "old-imsi",
-		TargetICCID: "target-iccid",
+	// Exercise the real readiness timeout without spending 30 seconds of wall time.
+	synctest.Test(t, func(t *testing.T) {
+		withImmediatePostSwitchIdentityRetries(t)
+		withFastPostSwitchIdentityPolling(t)
+		p := NewPool(&config.Config{})
+		defer p.cancel()
+		deviceID := "dev-1"
+		be := &esimSwitchRestoreBackendStub{
+			mode:      backend.BackendQMI,
+			getMode:   backend.ModeOnline,
+			liveICCID: "target-iccid",
+			liveIMSI:  "target-imsi",
+			uimReadiness: []qmimanager.UIMReadiness{{
+				TransportReady: false,
+				ControlReady:   false,
+				Reason:         qmimanager.UIMReadinessControlUnavailable,
+			}},
+		}
+		w := &Worker{
+			ID:      deviceID,
+			Config:  config.DeviceConfig{ID: deviceID, VoWiFiEnabled: false},
+			Backend: be,
+		}
+		w.cacheMu.Lock()
+		w.state.Identity.ICCID = "old-iccid"
+		w.state.Identity.IMSI = "old-imsi"
+		w.state.Identity.Ready = true
+		w.cacheMu.Unlock()
+		p.workers[deviceID] = w
+		withSwitchSnapshot(p, deviceID, esimSwitchContext{
+			ICCIDBefore: "old-iccid",
+			IMSIBefore:  "old-imsi",
+			TargetICCID: "target-iccid",
+		})
+
+		started := time.Now()
+		p.handleESIMSwitchAfter(deviceID, 0)
+		const controlReadyWait = 30 * time.Second
+		if elapsed := time.Since(started); elapsed < controlReadyWait {
+			t.Fatalf("control readiness wait = %s, want at least %s", elapsed, controlReadyWait)
+		}
+
+		deadline := time.After(500 * time.Millisecond)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			status := w.ProjectDeviceStatus()
+			if status.ICCID == "target-iccid" && status.IMSI == "target-imsi" {
+				return
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("identity did not converge after degraded control readiness, got %+v", status)
+			case <-ticker.C:
+			}
+		}
 	})
-
-	p.handleESIMSwitchAfter(deviceID, 0)
-
-	deadline := time.After(500 * time.Millisecond)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		status := w.ProjectDeviceStatus()
-		if status.ICCID == "target-iccid" && status.IMSI == "target-imsi" {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("identity did not converge after degraded control readiness, got %+v", status)
-		case <-ticker.C:
-		}
-	}
 }
 
 func TestHandleESIMSwitchAfterRestoreDoesNotSelfBlockOnSwitchGate(t *testing.T) {

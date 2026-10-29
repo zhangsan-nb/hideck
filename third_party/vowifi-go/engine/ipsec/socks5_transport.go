@@ -93,6 +93,8 @@ func NewSocks5Transport(cfg Socks5Config, compatibility ...any) (*Socks5Transpor
 	if err != nil {
 		return nil, err
 	}
+	// A proxy that accepts TCP but never answers the handshake must not hang the caller.
+	_ = tcpConn.SetDeadline(time.Now().Add(timeout))
 	// Bind UDP to the same local IP as the TCP control channel so a host
 	// virtual NIC (VMware/Hyper-V/Clash TUN) cannot send IKE on a different
 	// source address than the UDP Associate.
@@ -107,6 +109,7 @@ func NewSocks5Transport(cfg Socks5Config, compatibility ...any) (*Socks5Transpor
 		_ = tcpConn.Close()
 		return nil, err
 	}
+	_ = tcpConn.SetDeadline(time.Time{})
 	connections := socks5Connections{tcp: tcpConn, udp: udpConn, relay: relayAddr}
 	return newSocks5Transport(cfg, connections, remoteAddr), nil
 }

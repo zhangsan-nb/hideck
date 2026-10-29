@@ -72,6 +72,7 @@ type IMSRegisterTemplate struct {
 	StrictSecurityServerOffer           bool
 	AcceptRegisterContactWithoutUser    bool
 	RPReportOverPortUS                  bool
+	RefreshOffersNewSecurityClient      bool
 	EnableInitialRejectFallback         bool
 	FallbackIncludesServerParamsInSecCl bool
 	RegisterPolicy                      IMSRegisterPolicy

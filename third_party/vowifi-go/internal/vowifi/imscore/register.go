@@ -38,6 +38,10 @@ type registerSession struct {
 	serviceRoute   string
 	path           string
 	template       policy.IMSRegisterTemplate
+	// Attempt-owned; never copied into the next attempt's session.
+	refreshOffer *refreshSecurityOffer
+	gatedRefresh bool
+	switching    *pendingSecuritySwitch
 }
 
 type registerAttemptResult struct {
@@ -107,8 +111,10 @@ func (s *Service) registerLocked(ctx context.Context) error {
 	if err == nil {
 		expires, err = s.runRegisterFlow(ctx)
 	}
-	if err != nil && hadBinding && isProtectedPortConflict(err) {
-		// The reset drops the binding this refresh was meant to keep.
+	var switchFailed *refreshSwitchFailed
+	if err != nil && hadBinding && !errors.As(err, &switchFailed) && isProtectedPortConflict(err) {
+		// The reset drops the binding this refresh was meant to keep. A
+		// conflict on SM7 only fails the new SAs; the old ones stay.
 		hadBinding = false
 		expires, err = s.registerWithFreshProtectedPorts(ctx, err)
 	}
@@ -155,6 +161,7 @@ func (s *Service) registerLocked(ctx context.Context) error {
 		s.signalingFailureReason = err.Error()
 		s.sipOutboundKeepalive = false
 		s.sipOutbound = false
+		s.sipOutboundFlow.Store(false)
 		s.sipOutboundRequired = false
 		s.outboundContactOffered = false
 		s.outboundContactRegistered = false
@@ -288,12 +295,13 @@ func (s *Service) runRegisterFlow(ctx context.Context) (time.Duration, error) {
 	}
 }
 
-func (s *Service) runRegisterAttempt(ctx context.Context) (time.Duration, registerAttemptResult, error) {
-	var result registerAttemptResult
+func (s *Service) runRegisterAttempt(ctx context.Context) (expires time.Duration, result registerAttemptResult, err error) {
 	session, err := s.sessionForRegisterAttempt()
 	if err != nil {
 		return 0, result, err
 	}
+	s.attachRefreshSecurityOffer(session)
+	defer func() { s.releaseRefreshSecurityOffer(session, result, err) }()
 	s.mu.Lock()
 	s.regSession = session
 	s.mu.Unlock()
@@ -302,7 +310,7 @@ func (s *Service) runRegisterAttempt(ctx context.Context) (time.Duration, regist
 	if err != nil {
 		return 0, result, err
 	}
-	expires, err := s.commitRegisterSuccess(response, session)
+	expires, err = s.commitRegisterSuccess(response, session)
 	return expires, result, err
 }
 
@@ -322,6 +330,28 @@ func (s *Service) exchangeRegisterChallenges(
 	}
 	updateRegisterAttemptResponse(&result, resp)
 	for challengeCount := 0; isDigestChallengeResponse(resp); challengeCount++ {
+		if session.gatedRefresh && (session.switching != nil ||
+			len(resp.HeaderValues("Security-Server")) != 0 ||
+			!s.canReuseProtectedSecurityAgreement(session, resp)) &&
+			!s.canSwitchRefreshSecurity(session, resp) {
+			// A challenge to SM7 itself (TS 33.203 7.4.1a: one registration
+			// at a time), or one that would set up SAs this refresh cannot
+			// build, is declined before AKA; the active SAs stay. A challenge
+			// to SM1 answered over the active SAs proceeds.
+			return nil, result, &refreshChallengeDeclined{
+				status:         resp.StatusCode,
+				securityServer: logging.RedactSIPRaw(strings.Join(resp.HeaderValues("Security-Server"), ",")),
+			}
+		}
+		if session.gatedRefresh && s.canSwitchRefreshSecurity(session, resp) {
+			challenge := s.evaluateRegisterSecurityChallenge(resp, session.template)
+			if refusal := s.refreshSwitchRefusal(session, challenge); refusal != nil {
+				logging.Info("IMS refresh SA switch refused before AKA; keeping the active SAs",
+					"device", s.DeviceID(), "cseq", session.cseq, "status", resp.StatusCode, "err", refusal,
+					"security_server", logging.RedactSIPRaw(strings.Join(resp.HeaderValues("Security-Server"), ",")))
+				return nil, result, &refreshSwitchFailed{phase: "negotiate", err: refusal}
+			}
+		}
 		result.challengeCount = challengeCount + 1
 		if challengeCount >= maxAKAChallenges {
 			return nil, result, fmt.Errorf("imscore: AKA challenge limit %d exceeded", maxAKAChallenges)
@@ -335,6 +365,13 @@ func (s *Service) exchangeRegisterChallenges(
 		session.authHeader = auth
 		resp, err = s.exchangeRegister(ctx, session, auth)
 		if err != nil {
+			if session.switching != nil {
+				// No answer to SM7 says nothing about the old SAs, which
+				// carried SM1 and SM6 (TS 24.229 5.1.1.5.1).
+				logging.Info("IMS refresh SM7 got no response", "device", s.DeviceID(),
+					"cseq", session.cseq, "err", session.switching.sm7Error(err))
+				err = &refreshSwitchFailed{phase: "sm7", err: session.switching.sm7Error(err)}
+			}
 			return nil, result, err
 		}
 		updateRegisterAttemptResponse(&result, resp)
@@ -343,7 +380,21 @@ func (s *Service) exchangeRegisterChallenges(
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, result, registrationResponseError(resp, session.challenge != nil)
+		err := registrationResponseError(resp, session.challenge != nil)
+		if session.switching != nil {
+			// A 403 or any other final answer to SM7 fails this registration
+			// only: the UE deletes the temporary SAs and uses the old set
+			// (TS 24.229 5.1.1.5.1).
+			logging.Info("IMS refresh SM7 rejected", "device", s.DeviceID(),
+				"cseq", session.cseq, "status", resp.StatusCode, "err", err)
+			err = &refreshSwitchFailed{phase: "sm7", err: err}
+		}
+		return nil, result, err
+	}
+	if session.switching != nil {
+		if err := s.commitRefreshSecuritySwitch(session); err != nil {
+			return nil, result, err
+		}
 	}
 	if err := s.finalizeInitialRegisterSecurity(session, resp); err != nil {
 		return nil, result, err
@@ -388,7 +439,7 @@ func updateRegisterAttemptAuth(result *registerAttemptResult, session *registerS
 	result.authorization = authorization
 	result.secAgree = session.security != nil
 	if session.security != nil {
-		result.securityVerify = session.security.verifyHeader
+		result.securityVerify = registerSecurityVerify(session)
 	}
 	if session.challenge != nil {
 		result.authRealm = session.challenge.Realm
@@ -573,7 +624,14 @@ func (s *Service) exchangeRegister(ctx context.Context, session *registerSession
 		"security_client_mechanisms", securityClientMechanismCount(rawSIPHeaderValue(request, "Security-Client")),
 		"sip", logging.RedactSIPRaw(request))
 	s.logRegisterViaPorts(session, request)
-	response, err := s.transport.RoundTrip(ctx, request)
+	started := time.Now()
+	var response *sipResponse
+	var err error
+	if sender := s.switchSM7Sender(session); sender != nil {
+		response, err = s.transport.roundTripWithSender(session.switching.sm7Ctx, request, sender)
+	} else {
+		response, err = s.transport.RoundTrip(ctx, request)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("imscore: REGISTER CSeq %d transaction: %w", session.cseq, err)
 	}
@@ -586,6 +644,7 @@ func (s *Service) exchangeRegister(ctx context.Context, session *registerSession
 	}
 	logging.Info("IMS REGISTER response",
 		"device", s.DeviceID(), "cseq", session.cseq, "status", response.StatusCode,
+		"elapsed_ms", time.Since(started).Milliseconds(),
 		"security_server", response.Header("Security-Server") != "",
 		"digest_challenge", isDigestChallengeResponse(response))
 	s.logRegisterFlowNegotiation(response)
@@ -616,7 +675,11 @@ func (s *Service) answerDigestChallenge(ctx context.Context, session *registerSe
 		return "", false, authErr
 	}
 	if session.security != nil && !syncFailure {
-		if s.canReuseProtectedSecurityAgreement(session, response) {
+		if s.canSwitchRefreshSecurity(session, response) {
+			if err := s.switchRefreshSecurity(ctx, session, response, aka); err != nil {
+				return "", false, err
+			}
+		} else if s.canReuseProtectedSecurityAgreement(session, response) {
 			logging.Info("IMS re-authentication reusing established security agreement",
 				"device", s.DeviceID(), "cseq", session.cseq)
 		} else if err := s.installNegotiatedIPSec(ctx, session, response, aka); err != nil {
@@ -668,7 +731,13 @@ func (s *Service) retryDefaultInitialRegister(
 		return response, nil
 	}
 	session.template = policy.FallbackIMSRegisterTemplate(template)
-	if session.security != nil {
+	if offer := session.refreshOffer; offer != nil {
+		// The active SAs keep the Security-Client they were set up with.
+		offer.header = securityClientHeaderValue(offer.client, session.template)
+		logging.Info("IMS refresh offer retried with the fallback template",
+			"device", s.DeviceID(), "cseq", session.cseq+1, "status", response.StatusCode,
+			"template", session.template.ID, "offered_port_c", offer.client.PortC)
+	} else if session.security != nil {
 		session.security.clientHeader = securityClientHeaderValue(session.security.client, session.template)
 	}
 	session.cseq++
@@ -893,6 +962,14 @@ func (s *Service) keepRegistrationAfterFailedRefresh(hadBinding bool, err error)
 	if !hadBinding || s == nil || errors.Is(err, enginesim.ErrAPDUBusy) || !s.registrationFlowIntact() {
 		return false
 	}
+	var switchFailed *refreshSwitchFailed
+	if isRefreshChallengeDeclined(err) || errors.As(err, &switchFailed) {
+		// The old SAs stay in use (TS 24.229 5.1.1.5.1). An unanswered
+		// challenge leaves a registered identity registered at the S-CSCF
+		// (5.4.1.2.3 NOTE 2); keeping the binding after a rejected SM7 is
+		// our choice.
+		return true
+	}
 	var responseErr *registerResponseError
 	if !errors.As(err, &responseErr) {
 		return s.registrationFlowConfirmedDuringLastAttempt()
@@ -1092,13 +1169,26 @@ func digestQuotedValue(value string) string {
 	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(strings.TrimSpace(value))
 }
 
+// registerSecurityVerify mirrors the Security-Server of the SAs the request
+// is sent over: the new one for SM7 of a switch (TS 24.229 5.1.1.5.1).
+func registerSecurityVerify(session *registerSession) string {
+	if session.switching != nil {
+		return session.switching.verify
+	}
+	return session.security.verifyHeader
+}
+
 func registerSecurityHeaders(session *registerSession) string {
 	if session == nil || session.security == nil {
 		return ""
 	}
 	var builder strings.Builder
-	builder.WriteString("Security-Client: " + session.security.clientHeader + "\r\n")
-	headers := imsheaders.SecAgreeProtectedHeaders(session.security.verifyHeader)
+	clientHeader := session.security.clientHeader
+	if session.refreshOffer != nil {
+		clientHeader = session.refreshOffer.header
+	}
+	builder.WriteString("Security-Client: " + clientHeader + "\r\n")
+	headers := imsheaders.SecAgreeProtectedHeaders(registerSecurityVerify(session))
 	if len(headers) == 0 {
 		headers = []imsheaders.Header{
 			{Name: "Require", Value: "sec-agree"},

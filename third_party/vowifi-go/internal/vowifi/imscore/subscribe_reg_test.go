@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
@@ -196,31 +197,34 @@ func TestSubscriptionFailureKeepsRegistration(t *testing.T) {
 }
 
 func TestRegistrationSubscriptionTimeoutIsRecorded(t *testing.T) {
-	service := newProtectedKeepaliveTestService(t)
-	client, server := net.Pipe()
-	service.activateProtectedRegistrationTCP(client)
-	t.Cleanup(func() { _ = server.Close() })
-	readDone := make(chan error, 1)
-	go func() {
-		_, err := readSIPStreamMessage(bufio.NewReader(server))
-		readDone <- err
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	err := service.sendSubscribeReg(ctx)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("sendSubscribeReg error = %v, want deadline exceeded", err)
-	}
-	if err := <-readDone; err != nil {
-		t.Fatal(err)
-	}
-	service.mu.RLock()
-	lastErr := service.subscriptionLastErr
-	refreshAt := service.subscriptionRefreshAt
-	service.mu.RUnlock()
-	if !strings.Contains(lastErr, context.DeadlineExceeded.Error()) || refreshAt.IsZero() {
-		t.Fatalf("subscription failure state = err %q refresh %s", lastErr, refreshAt)
-	}
+	// Advance the deadline only after the pipe request has had a chance to run.
+	synctest.Test(t, func(t *testing.T) {
+		service := newProtectedKeepaliveTestService(t)
+		client, server := net.Pipe()
+		service.activateProtectedRegistrationTCP(client)
+		t.Cleanup(func() { _ = server.Close() })
+		readDone := make(chan error, 1)
+		go func() {
+			_, err := readSIPStreamMessage(bufio.NewReader(server))
+			readDone <- err
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		err := service.sendSubscribeReg(ctx)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("sendSubscribeReg error = %v, want deadline exceeded", err)
+		}
+		if err := <-readDone; err != nil {
+			t.Fatal(err)
+		}
+		service.mu.RLock()
+		lastErr := service.subscriptionLastErr
+		refreshAt := service.subscriptionRefreshAt
+		service.mu.RUnlock()
+		if !strings.Contains(lastErr, context.DeadlineExceeded.Error()) || refreshAt.IsZero() {
+			t.Fatalf("subscription failure state = err %q refresh %s", lastErr, refreshAt)
+		}
+	})
 }
 
 func TestRegistrationSubscriptionStopsWithService(t *testing.T) {

@@ -33,3 +33,13 @@ test('verified registered-flow reception describes its actual route', () => {
   assert.equal(createDashboardStages(runtime)[5]?.ready, true)
   assert.equal(smsReceptionDetail(runtime), '短信接收已验证，复用注册连接')
 })
+
+test('reception awaiting an on-demand port-s says so', () => {
+  const runtime = { ims_ready: true, sms_ready: true, sms_rx_pending: false,
+    sms_ready_reason: 'IMS SMS receiver ready; port-s timed out, P-CSCF reconnects on demand' }
+  assert.equal(createDashboardStages(runtime)[5]?.ready, true)
+  assert.equal(smsReceptionDetail(runtime), '端口已断，等运营商按需连入')
+  const probing = { ...runtime, sms_ready_reason: 'IMS SMS receiver ready; port-s timed out, REGISTER probing the P-CSCF' }
+  assert.equal(createDashboardStages(probing)[5]?.ready, true)
+  assert.equal(smsReceptionDetail(probing), '端口已断，等运营商按需连入')
+})

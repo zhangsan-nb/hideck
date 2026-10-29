@@ -26,6 +26,17 @@ type sipTransport struct {
 	closed    chan struct{}
 }
 
+// pendingClientTransactions counts client transactions still waiting for a
+// final response.
+func (t *sipTransport) pendingClientTransactions() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.waiters)
+}
+
 // newSIPTransport creates a SIP transport.
 func newSIPTransport() *sipTransport {
 	return &sipTransport{

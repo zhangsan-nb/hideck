@@ -48,30 +48,32 @@ type IMSRegisterPolicyOverride struct {
 }
 
 type IMSRegisterTemplate struct {
-	ID                                  string
-	UsePlainDigestPlaceholder           bool
-	Expires                             int
-	SMSReceiverTransport                string
-	ContactMode                         string
-	FixedPANI                           string
-	SupportedHeader                     string
-	AllowHeader                         string
-	AccessType                          string
-	ICSIRef                             string
-	ContactParamOrder                   []string
-	VoiceSupportedHeader                string
-	VoiceAllowHeader                    string
-	VoiceAcceptContact                  string
-	VoicePPreferredService              string
-	ForceHeaderPort5060                 bool
-	IncludePANIAuthenticated            bool
-	IncludeConnectionKeepaliveInAuth    bool
-	SecAgreeMode                        string
-	SecurityClientIncludesServerParams  bool
-	SecurityClientMechanisms            []IPSec3GPPSecurityMechanism
-	StrictSecurityServerOffer           bool
-	AcceptRegisterContactWithoutUser    bool
-	RPReportOverPortUS                  bool
+	ID                                 string
+	UsePlainDigestPlaceholder          bool
+	Expires                            int
+	SMSReceiverTransport               string
+	ContactMode                        string
+	FixedPANI                          string
+	SupportedHeader                    string
+	AllowHeader                        string
+	AccessType                         string
+	ICSIRef                            string
+	ContactParamOrder                  []string
+	VoiceSupportedHeader               string
+	VoiceAllowHeader                   string
+	VoiceAcceptContact                 string
+	VoicePPreferredService             string
+	ForceHeaderPort5060                bool
+	IncludePANIAuthenticated           bool
+	IncludeConnectionKeepaliveInAuth   bool
+	SecAgreeMode                       string
+	SecurityClientIncludesServerParams bool
+	SecurityClientMechanisms           []IPSec3GPPSecurityMechanism
+	StrictSecurityServerOffer          bool
+	AcceptRegisterContactWithoutUser   bool
+	RPReportOverPortUS                 bool
+	// Refresh REGISTER offers new SPIs and port-c (TS 24.229 5.1.1.4.2 d).
+	RefreshOffersNewSecurityClient      bool
 	EnableInitialRejectFallback         bool
 	FallbackIncludesServerParamsInSecCl bool
 	RegisterPolicy                      IMSRegisterPolicy
@@ -110,6 +112,7 @@ type IMSRegisterTemplateOverride struct {
 	StrictSecurityServerOffer           *bool                        `yaml:"strict_security_server_offer"`
 	AcceptRegisterContactWithoutUser    *bool                        `yaml:"accept_register_contact_without_user"`
 	RPReportOverPortUS                  *bool                        `yaml:"rp_report_over_port_us"`
+	RefreshOffersNewSecurityClient      *bool                        `yaml:"refresh_offers_new_security_client"`
 	EnableInitialRejectFallback         *bool                        `yaml:"enable_initial_reject_fallback"`
 	FallbackIncludesServerParamsInSecCl *bool                        `yaml:"fallback_includes_server_params_in_sec_client"`
 	RegisterPolicy                      IMSRegisterPolicyOverride    `yaml:"register_policy"`

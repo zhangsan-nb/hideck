@@ -1,12 +1,11 @@
 package device
 
 import (
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/yibaiba/hideck/internal/config"
 	"github.com/stretchr/testify/require"
+	"github.com/yibaiba/hideck/internal/config"
 )
 
 func TestAddWorkerQMIManagedRebindsByIMEIWhenControlDeviceGone(t *testing.T) {
@@ -55,10 +54,7 @@ func TestAddWorkerQMIManagedRebindsByIMEIWhenControlDeviceGone(t *testing.T) {
 	if err != nil {
 		// 立即失败时，错误必须来自新控制路径，这本身即可证明重绑已经完成。
 		require.ErrorContains(t, err, "启动 QMI Core 失败")
-		if !strings.Contains(err.Error(), "/dev/cdc-wdm-new-qmi") &&
-			!strings.Contains(err.Error(), "qmi-proxy transport is unsupported") {
-			t.Fatalf("QMI start error should mention rebound path or proxy: %v", err)
-		}
+		require.ErrorContains(t, err, "control_device=/dev/cdc-wdm-new-qmi")
 		require.NotContains(t, err.Error(), "/dev/nonexistent-control-old")
 		return
 	}

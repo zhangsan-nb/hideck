@@ -20,5 +20,9 @@ export function smsReceptionDetail(runtime?: VoWiFiRuntimeState): string {
   if (runtime?.sms_ready && runtime.sms_ready_reason === 'IMS SMS receiver verified on registered TCP flow') {
     return '短信接收已验证，复用注册连接'
   }
+  if (runtime?.sms_ready && (runtime.sms_ready_reason === 'IMS SMS receiver ready; port-s timed out, P-CSCF reconnects on demand' ||
+    runtime.sms_ready_reason === 'IMS SMS receiver ready; port-s timed out, REGISTER probing the P-CSCF')) {
+    return '端口已断，等运营商按需连入'
+  }
   return ''
 }

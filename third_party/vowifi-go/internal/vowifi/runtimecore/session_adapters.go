@@ -3,6 +3,7 @@ package runtimecore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -225,6 +226,13 @@ type installerIMSNetwork struct {
 	mu        sync.Mutex
 	installer imscore.IPSec3GPPInstaller
 	cleanup   func() error
+	// pending is a replacement SA set installed alongside cleanup's set and
+	// retiring the replaced set kept until its flows drain (TS 33.203 7.4.1a).
+	pending, retiring func() error
+}
+
+type alongsideIPSec3GPPInstaller interface {
+	InstallIPSec3GPPAlongside(context.Context, ipsec3gpp.Policy) (func() error, error)
 }
 
 type managedIMSNetwork interface {
@@ -268,12 +276,8 @@ func (network *installerIMSNetwork) InstallIPSec3GPP(value ipsec3gpp.Policy) err
 		)
 		return err
 	}
-	previous := network.cleanup
-	network.cleanup = nil
-	if previous != nil {
-		if err := previous(); err != nil {
-			return err
-		}
+	if err := network.takeAllLocked(); err != nil {
+		return err
 	}
 	cleanup, err := network.installer.InstallIPSec3GPP(context.Background(), value)
 	if err != nil {
@@ -285,9 +289,88 @@ func (network *installerIMSNetwork) InstallIPSec3GPP(value ipsec3gpp.Policy) err
 
 func (network *installerIMSNetwork) RemoveIPSec3GPP() error {
 	network.mu.Lock()
-	cleanup := network.cleanup
-	network.cleanup = nil
-	network.mu.Unlock()
+	defer network.mu.Unlock()
+	return network.takeAllLocked()
+}
+
+// takeAllLocked removes every set: the pending one first so the netstack
+// cleanup chain unwinds to nothing.
+func (network *installerIMSNetwork) takeAllLocked() error {
+	var err error
+	for _, cleanup := range []func() error{network.pending, network.retiring, network.cleanup} {
+		if cleanup != nil {
+			err = errors.Join(err, cleanup())
+		}
+	}
+	network.pending, network.retiring, network.cleanup = nil, nil, nil
+	return err
+}
+
+// KeepsTwoIPSec3GPPSets reports whether the installer can add a set beside the
+// active one; only the userspace netstack can.
+func (network *installerIMSNetwork) KeepsTwoIPSec3GPPSets() bool {
+	network.mu.Lock()
+	defer network.mu.Unlock()
+	_, ok := network.installer.(alongsideIPSec3GPPInstaller)
+	return ok
+}
+
+// AddIPSec3GPP installs a replacement SA set alongside the active one.
+func (network *installerIMSNetwork) AddIPSec3GPP(value ipsec3gpp.Policy) error {
+	network.mu.Lock()
+	defer network.mu.Unlock()
+	alongside, ok := network.installer.(alongsideIPSec3GPPInstaller)
+	if !ok {
+		return errors.New("runtimecore: IPsec installer cannot keep two SA sets")
+	}
+	if network.cleanup == nil || network.pending != nil {
+		return errors.New("runtimecore: alongside install needs exactly one active SA set")
+	}
+	// At most two sets coexist: a set still retiring goes first.
+	if retiring := network.retiring; retiring != nil {
+		network.retiring = nil
+		if err := retiring(); err != nil {
+			return fmt.Errorf("runtimecore: remove the retiring SA set: %w", err)
+		}
+	}
+	cleanup, err := alongside.InstallIPSec3GPPAlongside(context.Background(), value)
+	if err != nil {
+		return err
+	}
+	network.pending = cleanup
+	return nil
+}
+
+// AbortAddedIPSec3GPP deletes the pending set; the active set stays.
+func (network *installerIMSNetwork) AbortAddedIPSec3GPP() error {
+	network.mu.Lock()
+	defer network.mu.Unlock()
+	cleanup := network.pending
+	network.pending = nil
+	if cleanup == nil {
+		return nil
+	}
+	return cleanup()
+}
+
+// CommitAddedIPSec3GPP makes the pending set active and keeps the replaced
+// one until RetirePreviousIPSec3GPP.
+func (network *installerIMSNetwork) CommitAddedIPSec3GPP() error {
+	network.mu.Lock()
+	defer network.mu.Unlock()
+	if network.pending == nil {
+		return errors.New("runtimecore: no pending SA set to commit")
+	}
+	network.retiring, network.cleanup, network.pending = network.cleanup, network.pending, nil
+	return nil
+}
+
+// RetirePreviousIPSec3GPP deletes the set replaced by the last commit.
+func (network *installerIMSNetwork) RetirePreviousIPSec3GPP() error {
+	network.mu.Lock()
+	defer network.mu.Unlock()
+	cleanup := network.retiring
+	network.retiring = nil
 	if cleanup == nil {
 		return nil
 	}

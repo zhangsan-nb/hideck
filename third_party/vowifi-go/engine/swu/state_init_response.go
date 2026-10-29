@@ -56,8 +56,7 @@ func (s *Session) handleIKESAInitPacket(response *ikev2.IKEPacket) error {
 		return fmt.Errorf("derive IKE SA keys: %w", err)
 	}
 	s.sendCookie = false
-	s.applyNATTraversal(parsed.natSource, parsed.natDestination)
-	return nil
+	return s.applyNATTraversal(parsed.natSource, parsed.natDestination)
 }
 
 type ikeInitResponsePayloads struct {
@@ -228,9 +227,9 @@ func capabilityNegotiationError(kind string, algorithm uint16, cause error) erro
 	}
 }
 
-func (s *Session) applyNATTraversal(sourceHash, destinationHash []byte) {
+func (s *Session) applyNATTraversal(sourceHash, destinationHash []byte) error {
 	if s.socket == nil || len(sourceHash) == 0 || len(destinationHash) == 0 {
-		return
+		return nil
 	}
 	expectedSource := natDetectionHash(s.spiI, s.spiR, s.socket.LocalIP(), s.socket.LocalPort())
 	expectedDestination := natDetectionHash(
@@ -239,9 +238,9 @@ func (s *Session) applyNATTraversal(sourceHash, destinationHash []byte) {
 	s.natDetected = !bytes.Equal(sourceHash, expectedSource) ||
 		!bytes.Equal(destinationHash, expectedDestination)
 	if s.natDetected {
-		s.socket.SetRemotePort(4500)
-		s.remotePort = 4500
+		return s.floatToNATTPort()
 	}
+	return nil
 }
 
 func parseKERaw(payload *ikev2.RawPayload) (uint16, []byte, error) {

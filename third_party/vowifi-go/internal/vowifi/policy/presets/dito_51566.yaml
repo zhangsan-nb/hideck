@@ -24,6 +24,8 @@ ims_register_template:
   include_pani_authenticated: true
   strict_security_server_offer: true
   enable_initial_reject_fallback: true
+  # Every protected refresh REGISTER that reused the active port-c got 500 "AKA IP+Port conflict".
+  refresh_offers_new_security_client: true
   contact_param_order:
     - access_type
     - sip_instance

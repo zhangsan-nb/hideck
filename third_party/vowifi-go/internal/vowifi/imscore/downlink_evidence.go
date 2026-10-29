@@ -69,6 +69,7 @@ func (s *Service) recordCurrentDownlinkRequest(peer net.Conn, checkpoint downlin
 		if _, datagram := peer.(*protectedUDPPeer); datagram {
 			s.udpDownlinkProven.Store(true)
 			s.portSRecoveryAwaitingFlow.Store(false)
+			s.portSTimeoutAwaitEntered.Store(false)
 			s.portSReconnectWaiting.Store(false)
 			s.resetPortSRecoveryBackoff()
 			s.recordPortSInbound(time.Now())

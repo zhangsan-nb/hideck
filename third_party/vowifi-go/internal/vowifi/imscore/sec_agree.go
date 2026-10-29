@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -195,6 +196,9 @@ func mechanismSupported(mechanism securityMechanism) bool {
 }
 
 func (s *Service) installNegotiatedIPSec(ctx context.Context, session *registerSession, response *sipResponse, aka AKAResult) error {
+	// A fresh registration replaces every set; a set still retiring from a
+	// refresh switch must not outlive it and close the new flows.
+	s.retireReplacedSecurity(s.saRetirement.Load(), "reinstall")
 	challenge := s.evaluateRegisterSecurityChallenge(response, session.template)
 	server, verify, decision := challenge.server, challenge.verify, challenge.decision
 	if decision.err != nil {
@@ -219,21 +223,7 @@ func (s *Service) installNegotiatedIPSec(ctx context.Context, session *registerS
 		return err
 	}
 	client := session.security.client
-	policy := ipsec3gpp.Policy{
-		LocalIP: s.cfg.LocalIP, RemoteIP: remoteIP,
-		LocalPortC: int(client.PortC), LocalPortS: int(client.PortS),
-		RemotePortC: int(server.PortC), RemotePortS: int(server.PortS),
-		FlowC: ipsec3gpp.Flow{
-			OutboundSPI: server.SPIS, InboundSPI: client.SPIC,
-			LocalPort: int(client.PortC), RemotePort: int(server.PortS),
-			AuthAlg: server.Auth, EncAlg: server.Encryption, CK: aka.CK, IK: aka.IK,
-		},
-		FlowS: ipsec3gpp.Flow{
-			OutboundSPI: server.SPIC, InboundSPI: client.SPIS,
-			LocalPort: int(client.PortS), RemotePort: int(server.PortC),
-			AuthAlg: server.Auth, EncAlg: server.Encryption, CK: aka.CK, IK: aka.IK,
-		},
-	}
+	policy := negotiatedIPSecPolicy(s.cfg.LocalIP, remoteIP, client, *server, aka)
 	if err := s.InstallIPSec3GPP(policy); err != nil {
 		s.recordSignalingFailure(decision.mode, decision.reason, err)
 		return fmt.Errorf("imscore: install negotiated 3GPP IPsec: %w", err)
@@ -271,6 +261,24 @@ func (s *Service) installNegotiatedIPSec(ctx context.Context, session *registerS
 	}
 	s.recordSecurityMode(decision.mode, "", false)
 	return nil
+}
+
+func negotiatedIPSecPolicy(localIP, remoteIP net.IP, client, server securityMechanism, aka AKAResult) ipsec3gpp.Policy {
+	return ipsec3gpp.Policy{
+		LocalIP: localIP, RemoteIP: remoteIP,
+		LocalPortC: int(client.PortC), LocalPortS: int(client.PortS),
+		RemotePortC: int(server.PortC), RemotePortS: int(server.PortS),
+		FlowC: ipsec3gpp.Flow{
+			OutboundSPI: server.SPIS, InboundSPI: client.SPIC,
+			LocalPort: int(client.PortC), RemotePort: int(server.PortS),
+			AuthAlg: server.Auth, EncAlg: server.Encryption, CK: aka.CK, IK: aka.IK,
+		},
+		FlowS: ipsec3gpp.Flow{
+			OutboundSPI: server.SPIC, InboundSPI: client.SPIS,
+			LocalPort: int(client.PortS), RemotePort: int(server.PortC),
+			AuthAlg: server.Auth, EncAlg: server.Encryption, CK: aka.CK, IK: aka.IK,
+		},
+	}
 }
 
 // protectedRegistrationSAReplaced reports whether the offer just accepted

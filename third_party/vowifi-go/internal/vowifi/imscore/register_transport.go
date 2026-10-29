@@ -129,9 +129,19 @@ func (s *Service) connectProtectedRegistrationTCP(ctx context.Context, client, s
 }
 
 func (s *Service) dialProtectedRegistrationTCP(ctx context.Context, client, server securityMechanism) error {
+	conn, err := s.dialProtectedTCP(ctx, client, server)
+	if err != nil {
+		return err
+	}
+	s.activateProtectedRegistrationTCP(conn)
+	return nil
+}
+
+// dialProtectedTCP opens the flow port_uc -> port_ps without publishing it.
+func (s *Service) dialProtectedTCP(ctx context.Context, client, server securityMechanism) (net.Conn, error) {
 	registrationRemote := s.currentRegistrationRemote()
 	if registrationRemote == nil || registrationRemote.IP == nil {
-		return errors.New("imscore: registrar IP unavailable for protected TCP")
+		return nil, errors.New("imscore: registrar IP unavailable for protected TCP")
 	}
 	local := &net.TCPAddr{IP: s.cfg.LocalIP, Port: int(client.PortC)}
 	remote := &net.TCPAddr{IP: registrationRemote.IP, Port: int(server.PortS)}
@@ -143,17 +153,16 @@ func (s *Service) dialProtectedRegistrationTCP(ctx context.Context, client, serv
 	})
 	logSecureChannelAttemptResult(attempts, err)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := setIPSec3GPPTCPMSS(conn); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("imscore: set protected REGISTER TCP MSS: %w", err)
+		return nil, fmt.Errorf("imscore: set protected REGISTER TCP MSS: %w", err)
 	}
 	logging.Info("IMS protected REGISTER TCP connected",
 		"local_port", local.Port, "remote_port", remote.Port)
 	logSecureChannelEstablished(conn)
-	s.activateProtectedRegistrationTCP(conn)
-	return nil
+	return conn, nil
 }
 
 func (s *Service) protectedReconnectParameters() (bool, securityMechanism, securityMechanism) {
@@ -290,6 +299,8 @@ func (s *Service) serveProtectedSIPConnection(conn net.Conn) {
 // falls back to a REGISTER refresh if it does not. A failed refresh is not
 // evidence of an on-demand flow. A later peer reconnect permits waiting after
 // clean EOF only; it does not establish reachability after transport errors.
+// A timeout on a listed carrier waits only after a successful REGISTER
+// (canAwaitPeerAfterTimeout).
 func (s *Service) handleProtectedServerPushClosed() {
 	if s == nil || s.stopped() {
 		return
@@ -304,7 +315,18 @@ func (s *Service) handleProtectedServerPushClosed() {
 		return
 	}
 	s.portSReconnectWaiting.Store(true)
+	// A new close starts a new episode: only a REGISTER response after this
+	// close can show the P-CSCF is still there (canAwaitPeerAfterTimeout).
+	s.portSRecoveryAwaitingFlow.Store(false)
+	staleAwait := s.portSTimeoutAwaitEntered.Swap(false)
 	s.protectedConnMu.Unlock()
+	if staleAwait {
+		// The close was published while the await still reported ready.
+		s.notifySMSReadiness()
+		logging.WarnRate("ims-ports-stale-await-"+s.DeviceID(), 30*time.Second,
+			"IMS port-s closed while still marked awaiting peer after timeout; restart recovery",
+			"device", s.DeviceID(), "close_kind", s.capturePortSSession().lastCloseKind)
+	}
 	if s.canAwaitOnDemandPortS() {
 		logging.Info("IMS protected server push closed; await peer port-s reconnect",
 			"device", s.DeviceID(), "since_last_read", s.portSSinceLastRead(),
@@ -318,6 +340,10 @@ func (s *Service) handleProtectedServerPushClosed() {
 		logging.Info("IMS protected server push closed during recovery backoff",
 			"device", s.DeviceID(), "since_last_read", s.portSSinceLastRead(),
 			"retry_in", retryAt.Sub(now))
+		// No probe REGISTER follows this close until the backoff ends.
+		if s.endTimeoutProbeGrace("recovery backoff", nil) {
+			s.notifySMSReadiness()
+		}
 		s.schedulePortSReconnectWatchAt(retryAt)
 		return
 	}
@@ -408,6 +434,15 @@ func (s *Service) portSReconnectWatchFired(generation uint64, registrar string) 
 		s.protectedConnMu.Unlock()
 		return
 	}
+	if s.awaitingPeerAfterTimeout() {
+		s.protectedConnMu.Unlock()
+		// enterPortSTimeoutAwait bumps the watch generation via
+		// resetPortSRecoveryBackoff, so this is a bug.
+		logging.WarnRate("ims-ports-await-watch-"+s.DeviceID(), 30*time.Second,
+			"IMS port-s watch fired while awaiting peer after timeout; ignored",
+			"device", s.DeviceID(), "generation", generation, "registrar", registrar)
+		return
+	}
 	portSGeneration := s.capturePortSSession().generation
 	s.protectedConnMu.Unlock()
 	if s.portSRecoveryAwaitingFlow.Swap(false) {
@@ -424,6 +459,7 @@ func (s *Service) portSReconnectWatchFired(generation uint64, registrar string) 
 	if !s.portSRecoveryPending.CompareAndSwap(false, true) {
 		return
 	}
+	s.portSRecoveryRegisterGen.Store(portSGeneration)
 	s.markPortSResetRecoveryAttempt(registrar)
 	s.triggerRegisterImmediate("port-s flow failed")
 }
@@ -454,6 +490,10 @@ func (s *Service) canAwaitOnDemandPortS() bool {
 			preset == twoDegreesNZCarrierPresetID
 	case portSClosePeerReset:
 		return preset == oneNZCarrierPresetID
+	case portSCloseSARetired:
+		// The P-CSCF sends further requests to port_us over the new SAs,
+		// opening a new port-s flow (TS 24.229 5.2.2.2).
+		return true
 	}
 	return false
 }
@@ -474,6 +514,100 @@ func (s *Service) awaitPortSAfterRegister() bool {
 	return s.canAwaitOnDemandPortS()
 }
 
+// canAwaitPeerAfterTimeout reports whether a timed-out port-s can be left
+// for the P-CSCF to reopen. TS 33.203 §7.1 item 1 (TCP case) makes the P-CSCF
+// set up a connection to port_us before sending a request, and §7.1 NOTE 6
+// does not require keeping it open. The REGISTER after the close must have
+// succeeded (portSRecoveryAwaitingFlow) so a dead P-CSCF is still caught.
+// A timeout does not show the P-CSCF chose to close, and a past peer reconnect
+// is only a hint for a clean EOF (canAwaitOnDemandPortS), so only carriers
+// seen reopening a timed-out port-s for MT requests wait (timeoutAwaitPreset).
+// Other carriers, Vodafone UK's validation and failover, and RFC 5626 outbound
+// flows keep their recovery.
+func (s *Service) canAwaitPeerAfterTimeout() bool {
+	if s == nil || usesVodafoneUKPortSResetRecovery(s.cfg) || s.sipOutboundFlow.Load() {
+		return false
+	}
+	return s.capturePortSSession().lastCloseKind == portSCloseTimeout &&
+		s.timeoutAwaitPreset() && s.portSRecoveryAwaitingFlow.Load()
+}
+
+// timeoutAwaitPreset reports a carrier whose P-CSCF lets an idle port-s time
+// out and reopens it only to deliver a request. Lebara UK: port-s timed out
+// after 2-14 hours idle on 10-06, 10-08 and 10-09, REGISTER 200 never reopened
+// it, and an MT SMS reopened it each time (10-24: after 21m48s closed; 10-28:
+// after 9m51s and 4m27s, the second for an A2P SMS).
+func (s *Service) timeoutAwaitPreset() bool {
+	return s != nil && s.cfg != nil && strings.TrimSpace(s.cfg.CarrierPresetID) == lebaraUKCarrierPresetID
+}
+
+// timeoutProbeGraceLocked keeps SMS reception ready from a port-s timeout on
+// a timeoutAwaitPreset carrier until the probe REGISTER after it answers. The
+// timeout itself is not a fault: either side may close the TCP connection
+// (TS 24.229 §4.2A NOTE 2) and this P-CSCF reopens it on demand. The probe
+// takes about one REGISTER round trip; its failure (endTimeoutProbeGrace), a
+// validation after its success, another P-CSCF or a new registration
+// (resetPortSRecoveryKnowledge) ends the grace. Outbound flows keep their
+// RFC 5626 recovery and readiness. The caller holds mu.
+func (s *Service) timeoutProbeGraceLocked(portS portSSessionSnapshot) bool {
+	probe := s.portSTimeoutProbe.Load()
+	return probe != nil && probe.generation == portS.generation &&
+		strings.EqualFold(probe.registrar, strings.TrimSpace(s.registrar)) &&
+		s.timeoutAwaitPreset() && !s.sipOutboundFlow.Load() &&
+		portS.lastCloseKind == portSCloseTimeout && !portS.connected &&
+		!s.portSRecoveryAwaitingFlow.Load() && !s.portSMissingAfterRegister.Load()
+}
+
+// endTimeoutProbeGrace ends the reception grace of the current timed-out
+// port-s; it reports whether a grace was ended. Callers publish readiness.
+func (s *Service) endTimeoutProbeGrace(reason string, err error) bool {
+	probe := s.portSTimeoutProbe.Load()
+	session := s.capturePortSSession()
+	if probe == nil || probe.generation != session.generation ||
+		!s.portSTimeoutProbe.CompareAndSwap(probe, nil) {
+		return false
+	}
+	logging.Info("IMS port-s timeout reception grace ended",
+		"device", s.DeviceID(), "reason", reason, "err", err,
+		"port_s_generation", session.generation, "cseq", s.cseq.Load(), "status", s.lastSIPCode.Load(),
+		"since_close", time.Since(session.closedAt).Round(time.Second),
+		"pcscf", probe.registrar, "carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+	return true
+}
+
+// probeTimedOutPortSAgain sends the probe REGISTER for a timeout that closed
+// port-s while another REGISTER was in flight: that REGISTER's success belongs
+// to an older port-s generation, so it does not show the P-CSCF answered after
+// this close. The watch sends the probe once this REGISTER releases registerMu.
+func (s *Service) probeTimedOutPortSAgain() bool {
+	if !s.timeoutAwaitPreset() || s.sipOutboundFlow.Load() {
+		return false
+	}
+	s.protectedConnMu.Lock()
+	session := s.capturePortSSession()
+	registerGen := s.portSRecoveryRegisterGen.Load()
+	stale := len(s.protectedConns) == 0 && session.lastCloseKind == portSCloseTimeout &&
+		session.generation != registerGen
+	s.protectedConnMu.Unlock()
+	if !stale {
+		return false
+	}
+	s.portSRecoveryAwaitingFlow.Store(false)
+	logging.Info("IMS port-s timed out during a REGISTER; probing with another REGISTER",
+		"device", s.DeviceID(), "port_s_generation", session.generation,
+		"register_port_s_generation", registerGen, "cseq", s.cseq.Load(), "status", s.lastSIPCode.Load(),
+		"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+	s.schedulePortSReconnectWatchAt(time.Now())
+	return true
+}
+
+// awaitingPeerAfterTimeout reports an await that enterPortSTimeoutAwait
+// accepted for the current episode. Recovery and readiness follow this, not
+// eligibility, so a refused entry keeps the normal validation path.
+func (s *Service) awaitingPeerAfterTimeout() bool {
+	return s != nil && s.portSTimeoutAwaitEntered.Load()
+}
+
 func portSClosedFor(session portSSessionSnapshot) time.Duration {
 	if session.closedAt.IsZero() || session.openedAt.Before(session.closedAt) {
 		return 0
@@ -486,6 +620,7 @@ const (
 	globePHCarrierPresetID      = "globe_ph_51502"
 	ditoPHCarrierPresetID       = "dito_51566"
 	twoDegreesNZCarrierPresetID = "2degrees_nz_53024"
+	lebaraUKCarrierPresetID     = "lebara_uk_23487"
 )
 
 func (s *Service) consumePortSReconnectWatch(generation uint64, registrar string) bool {
@@ -529,6 +664,32 @@ func (s *Service) completePortSRecovery(err error, bindingPreserved bool) {
 			s.clearPortSRecoveryDeadline()
 			s.portSRecoveryAwaitingFlow.Store(true)
 			s.portSReconnectWaiting.Store(true)
+			if s.canAwaitPeerAfterTimeout() && s.enterPortSTimeoutAwait(s.portSRecoveryRegisterGen.Load()) {
+				return
+			}
+			if s.portSTimeoutAwaitEntered.Swap(false) {
+				// The await no longer qualifies (for example this refresh
+				// negotiated an outbound flow), so validate port-s again.
+				logging.Info("IMS port-s await after timeout revoked; validating port-s",
+					"device", s.DeviceID(), "peer_reconnect_observed", s.portSOnDemandObserved.Load(),
+					"carrier_preset_await", s.timeoutAwaitPreset(),
+					"vodafone_uk", usesVodafoneUKPortSResetRecovery(s.cfg), "outbound", s.sipOutboundFlow.Load(),
+					"close_kind", s.capturePortSSession().lastCloseKind,
+					"register_port_s_generation", s.portSRecoveryRegisterGen.Load(),
+					"port_s_generation", s.capturePortSSession().generation,
+					"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+			}
+			if s.probeTimedOutPortSAgain() {
+				return
+			}
+			if pending && s.capturePortSSession().lastCloseKind == portSCloseTimeout {
+				logging.Info("IMS port-s timed out; REGISTER succeeded, validating port-s",
+					"device", s.DeviceID(), "peer_reconnect_observed", s.portSOnDemandObserved.Load(),
+					"vodafone_uk", usesVodafoneUKPortSResetRecovery(s.cfg), "outbound", s.sipOutboundFlow.Load(),
+					"register_port_s_generation", s.portSRecoveryRegisterGen.Load(),
+					"port_s_generation", s.capturePortSSession().generation,
+					"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+			}
 			s.schedulePortSReconnectWatchAt(time.Now().Add(s.portSRecoveryValidationWait()))
 		}
 		return
@@ -536,6 +697,19 @@ func (s *Service) completePortSRecovery(err error, bindingPreserved bool) {
 	// A failed REGISTER supersedes any earlier post-success validation wait.
 	s.retainReplacementRegisterRetryAfter(err)
 	s.portSRecoveryAwaitingFlow.Store(false)
+	s.endTimeoutProbeGrace("REGISTER failed", err)
+	if s.portSTimeoutAwaitEntered.Swap(false) {
+		next := "resume port-s recovery"
+		if !bindingPreserved {
+			next = "binding lost; registration restarts"
+		}
+		logging.Info("IMS REGISTER failed while awaiting peer port-s after timeout",
+			"device", s.DeviceID(), "err", err, "binding_preserved", bindingPreserved,
+			"canceled", isRegisterOperationCanceled(err), "next", next,
+			"since_close", time.Since(s.capturePortSSession().closedAt).Round(time.Second),
+			"peer_reconnect_observed", s.portSOnDemandObserved.Load(),
+			"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+	}
 	if !bindingPreserved {
 		s.portSReconnectWaiting.Store(false)
 		s.resetPortSRecoveryBackoff()
@@ -567,8 +741,29 @@ func (s *Service) recordOnDemandPortSReconnect() {
 		return
 	}
 	timeout := s.clearPortSTimeoutRecovery()
+	awaitedAfterTimeout := s.portSTimeoutAwaitEntered.Swap(false)
 	awaitingFlow := s.portSRecoveryAwaitingFlow.Swap(false)
 	session := s.capturePortSSession()
+	if awaitedAfterTimeout {
+		s.portSReconnectWaiting.Store(false)
+		s.resetPortSRecoveryBackoff()
+		if s.portSRecoveryPending.Load() || s.registrationInProgress() {
+			// A REGISTER in flight may have prompted this reopen, so it is
+			// not on-demand evidence, as below.
+			logging.Info("IMS peer reopened port-s while awaited after timeout during a REGISTER; not counted as on-demand",
+				"device", s.DeviceID(), "close_kind", session.lastCloseKind, "closed_for", portSClosedFor(session),
+				"port_s_generation", session.generation, "cseq", s.cseq.Load(), "status", s.lastSIPCode.Load(),
+				"peer_reconnect_observed", s.portSOnDemandObserved.Load(),
+				"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+			return
+		}
+		s.portSOnDemandObserved.Store(true)
+		logging.Info("IMS peer reopened port-s while awaited after timeout", "device", s.DeviceID(),
+			"close_kind", session.lastCloseKind, "closed_for", portSClosedFor(session),
+			"peer_reconnect_observed", s.portSOnDemandObserved.Load(),
+			"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+		return
+	}
 	if awaitingFlow || timeout.validationFailed {
 		s.portSReconnectWaiting.Store(false)
 		s.resetPortSRecoveryBackoff()
@@ -623,6 +818,8 @@ func (s *Service) resetPortSRecoveryKnowledge() {
 	s.portSRecoveryAwaitingFlow.Store(false)
 	s.portSOnDemandObserved.Store(false)
 	s.portSMissingAfterRegister.Store(false)
+	s.portSTimeoutAwaitEntered.Store(false)
+	s.portSTimeoutProbe.Store(nil)
 	s.clearPortSResetRecovery("")
 	s.clearPortSTimeoutRecovery()
 }
@@ -726,12 +923,41 @@ func (s *Service) clearClosedRegistrationTCP(conn net.Conn, readErr error) {
 		readErr = io.EOF
 	}
 	err := fmt.Errorf("imscore: registration SIP stream closed: %w", readErr)
-	logging.WarnRate("ims-registration-stream", "IMS registration SIP stream closed", "err", err)
-	s.failTCPKeepalivePong(errTCPCRLFStreamClosed)
 	_ = conn.Close()
 	stopped := s.stopped()
 	s.mu.Lock()
 	current := s.registrationTCP == conn
+	pending := s.registrationPendingTCP == conn
+	switching := s.registrationPendingTCP != nil
+	if pending {
+		// Fail SM7 now instead of waiting for Timer F; a commit racing this
+		// close sees the error.
+		s.registrationPendingErr = readErr
+		if s.registrationPendingCancel != nil {
+			s.registrationPendingCancel()
+		}
+	}
+	role := "retired"
+	switch {
+	case current:
+		role = "current"
+	case pending:
+		role = "sm7_pending"
+	}
+	logging.WarnRate("ims-registration-stream", "IMS registration SIP stream closed", "err", err,
+		"role", role, "switch_pending", switching, "local", conn.LocalAddr())
+	if current && switching {
+		// The refresh switch owns the outcome: a commit publishes the new
+		// flow, an abort finds no intact flow and fails the refresh.
+		s.registrationTCP = nil
+		s.registrationTCPProtected = false
+		s.transport.SetSendFn(func(string) error {
+			return errors.New("imscore: registered SIP transport is not connected")
+		})
+		s.mu.Unlock()
+		s.failTCPKeepalivePong(errTCPCRLFStreamClosed)
+		return
+	}
 	if current {
 		if !stopped {
 			s.abandonReplacementDownlinkWaitLocked()
@@ -747,6 +973,10 @@ func (s *Service) clearClosedRegistrationTCP(conn net.Conn, readErr error) {
 		}
 	}
 	s.mu.Unlock()
+	if current {
+		// A retired or still-pending flow carries no keepalive of its own.
+		s.failTCPKeepalivePong(errTCPCRLFStreamClosed)
+	}
 	if !current || stopped {
 		return
 	}
@@ -765,6 +995,7 @@ func (s *Service) readRegistrationStreamSync(conn net.Conn) error {
 		if err != nil {
 			return err
 		}
+		s.noteInboundOverNewSA(tcpPortFromAddr(conn.LocalAddr()), tcpPortFromAddr(conn.RemoteAddr()))
 		if err := s.dispatchInboundSIPMessageWithPeer(message, message.String(), func(response string) error {
 			return s.writeSIPStream(conn, response)
 		}, conn); err != nil {

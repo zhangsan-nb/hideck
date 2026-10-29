@@ -65,9 +65,25 @@ func smsInboxIMSI(source smsInboxIMSIReader, liveRefresh bool) string {
 	return strings.TrimSpace(source.GetIMSI())
 }
 
+const (
+	loginAttemptWindow = 2 * time.Minute
+	loginAttemptLimit  = 10
+	loginLockout       = 10 * time.Minute
+)
+
 type loginAttempt struct {
-	Count   int
-	ResetAt time.Time
+	Gen         uint64 // bumped per counting window; a late release for an older window is ignored
+	Count       int
+	WindowEnd   time.Time
+	LockedUntil time.Time
+	Warned      bool
+}
+
+func (a loginAttempt) expiresAt() time.Time {
+	if a.LockedUntil.After(a.WindowEnd) {
+		return a.LockedUntil
+	}
+	return a.WindowEnd
 }
 
 const updateCheckTimeout = 10 * time.Second
@@ -127,6 +143,8 @@ type Server struct {
 
 	loginMu                sync.Mutex
 	loginAttempts          map[string]loginAttempt
+	loginPrunedAt          time.Time
+	loginGen               uint64
 	authMu                 sync.RWMutex
 	authChangeMu           sync.Mutex
 	passwordChangeRequired bool
@@ -269,27 +287,77 @@ func (s *Server) issueSessionToken() (string, time.Time, error) {
 
 // pruneExpiredSessionsLocked is removed.
 
-func (s *Server) allowLoginAttempt(ip string, now time.Time) bool {
+// allowLoginAttempt reserves an attempt before the password is checked, so
+// concurrent requests cannot exceed the limit. Call the returned release once
+// the password is correct; only failures accumulate. A success does not reset
+// the count: concurrent wrong attempts from the same IP already hold their
+// reservations, and a reset would hand them another round.
+// The attempt that reaches loginAttemptLimit is still allowed and starts a
+// loginLockout. When rejected, release is nil and wait is the remaining lockout.
+func (s *Server) allowLoginAttempt(ip string, now time.Time) (release func(), wait time.Duration) {
 	if ip == "" {
 		ip = "unknown"
 	}
-	window := 2 * time.Minute
-	limit := 10
 
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
+	s.pruneLoginAttemptsLocked(now)
 
-	cur := s.loginAttempts[ip]
-	if cur.ResetAt.IsZero() || now.After(cur.ResetAt) {
-		cur = loginAttempt{Count: 0, ResetAt: now.Add(window)}
+	cur, ok := s.loginAttempts[ip]
+	if !ok || !now.Before(cur.expiresAt()) {
+		s.loginGen++
+		cur = loginAttempt{Gen: s.loginGen, WindowEnd: now.Add(loginAttemptWindow)}
 	}
-	if cur.Count >= limit {
-		s.loginAttempts[ip] = cur
-		return false
+	if now.Before(cur.LockedUntil) {
+		if !cur.Warned {
+			cur.Warned = true
+			s.loginAttempts[ip] = cur
+			logger.Warn("登录尝试过多，已锁定该 IP",
+				"ip", ip, "attempts", cur.Count, "locked_until", cur.LockedUntil.Format(time.RFC3339))
+		}
+		return nil, cur.LockedUntil.Sub(now)
 	}
 	cur.Count++
+	if cur.Count >= loginAttemptLimit {
+		cur.LockedUntil = now.Add(loginLockout)
+	}
 	s.loginAttempts[ip] = cur
-	return true
+	gen := cur.Gen
+	return func() { s.releaseLoginAttempt(ip, gen) }, 0
+}
+
+// releaseLoginAttempt gives back a reservation from the same counting window
+// only, and lifts the lockout that reservation triggered once below the limit.
+func (s *Server) releaseLoginAttempt(ip string, gen uint64) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	cur, ok := s.loginAttempts[ip]
+	if !ok || cur.Gen != gen || cur.Count == 0 {
+		return
+	}
+	cur.Count--
+	if cur.Count < loginAttemptLimit {
+		cur.LockedUntil, cur.Warned = time.Time{}, false
+	}
+	s.loginAttempts[ip] = cur
+}
+
+// pruneLoginAttemptsLocked drops expired IPs at most once per counting window
+// so the map does not grow without bound.
+func (s *Server) pruneLoginAttemptsLocked(now time.Time) {
+	if now.Sub(s.loginPrunedAt) < loginAttemptWindow {
+		return
+	}
+	s.loginPrunedAt = now
+	for ip, a := range s.loginAttempts {
+		if !now.Before(a.expiresAt()) {
+			delete(s.loginAttempts, ip)
+		}
+	}
+}
+
+func setLoginRetryAfter(c *gin.Context, wait time.Duration) {
+	c.Header("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
 }
 
 func (s *Server) newRouter() *gin.Engine {
@@ -1047,7 +1115,9 @@ func (s *Server) handleLogin(c *gin.Context) {
 	}
 
 	clientIP := c.ClientIP()
-	if !s.allowLoginAttempt(clientIP, time.Now()) {
+	release, wait := s.allowLoginAttempt(clientIP, time.Now())
+	if release == nil {
+		setLoginRetryAfter(c, wait)
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"status":     "error",
 			"code":       "rate_limited",
@@ -1059,6 +1129,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	session, authenticated, err := s.createLoginSession(req.Username, req.Password)
 	if authenticated {
+		release()
 		if err != nil {
 			logger.Error("生成登录 token 失败", "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -1223,7 +1294,9 @@ func (s *Server) authorizeRotate(c *gin.Context, username string, password strin
 	}
 
 	clientIP := c.ClientIP()
-	if !s.allowLoginAttempt(clientIP, now) {
+	release, wait := s.allowLoginAttempt(clientIP, now)
+	if release == nil {
+		setLoginRetryAfter(c, wait)
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"status":     "error",
 			"code":       "rate_limited",
@@ -1235,8 +1308,10 @@ func (s *Server) authorizeRotate(c *gin.Context, username string, password strin
 
 	credentials := s.authSnapshot()
 	if username == credentials.Username && checkPassword(credentials.Password, password) {
+		release()
 		return true
 	}
+	logger.Warn("认证失败", "ip", clientIP, "username", username)
 
 	c.JSON(http.StatusUnauthorized, gin.H{
 		"status":     "error",

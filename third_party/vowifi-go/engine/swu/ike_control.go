@@ -258,12 +258,18 @@ func (s *Session) dispatchIKEResponse(
 		return nil
 	}
 	s.controlMu.Unlock()
+	// A waiter takes one reassembled response; its buffer is full only when it
+	// already holds one or has returned. Blocking here on a retransmitted
+	// duplicate would also stall stopIKEControlGeneration in controlWG.Wait.
 	select {
 	case waiter <- append([]byte(nil), raw...):
-		return nil
-	case <-s.ctx.Done():
-		return s.ctx.Err()
+	default:
+		if s.Logger != nil {
+			s.Logger.Debug("dropped duplicate IKE response",
+				zap.Uint32("msg_id", header.MessageID), zap.Uint8("exchange", uint8(header.ExchangeType)))
+		}
 	}
+	return nil
 }
 
 func (s *Session) ikeRequestLoop(requests <-chan []byte) {

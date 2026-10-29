@@ -153,8 +153,18 @@ func TestResolveEmbeddedCarrierPresets(t *testing.T) {
 	}
 	if twoDegrees := ResolveEffectiveCarrierConfig("530", "24"); twoDegrees.PresetID != "2degrees_nz_53024" ||
 		!twoDegrees.IMSRegisterTemplate.AcceptRegisterContactWithoutUser || twoDegrees.IMSRegisterTemplate.RPReportOverPortUS ||
-		!CarrierPlanFromEffectiveConfig(twoDegrees).IMS.RegisterTemplate.AcceptRegisterContactWithoutUser {
+		!CarrierPlanFromEffectiveConfig(twoDegrees).IMS.RegisterTemplate.AcceptRegisterContactWithoutUser ||
+		!CarrierPlanFromEffectiveConfig(twoDegrees).IMS.RegisterTemplate.RefreshOffersNewSecurityClient {
 		t.Fatalf("2degrees nz = %+v", twoDegrees.IMSRegisterTemplate)
+	}
+	if dito := ResolveEffectiveCarrierConfig("515", "66"); dito.PresetID != "dito_51566" ||
+		!CarrierPlanFromEffectiveConfig(dito).IMS.RegisterTemplate.RefreshOffersNewSecurityClient {
+		t.Fatalf("dito ph = %+v", dito.IMSRegisterTemplate)
+	}
+	for _, plmn := range [][2]string{{"234", "15"}, {"515", "02"}, {"530", "01"}, {"530", "05"}, {"234", "87"}} {
+		if cfg := ResolveEffectiveCarrierConfig(plmn[0], plmn[1]); cfg.IMSRegisterTemplate.RefreshOffersNewSecurityClient {
+			t.Fatalf("%s refresh_offers_new_security_client is on", cfg.PresetID)
+		}
 	}
 	if spark := ResolveEffectiveCarrierConfig("530", "05"); spark.IMSRegisterTemplate.AcceptRegisterContactWithoutUser {
 		t.Fatal("spark nz accepts a Contact without the user part")

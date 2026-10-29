@@ -422,6 +422,8 @@ func (s *Service) StopCurrent() {
 		close(s.stop)
 	}
 	s.stopInboundStatsLogger()
+	// The replaced SAs' flows hold readers that networkDone waits for.
+	s.retireReplacedSecurity(s.saRetirement.Load(), "stop")
 	s.closeProtectedUDP()
 	s.cancelPortSReconnectWatch()
 	s.clearPendingSMS()
@@ -431,6 +433,8 @@ func (s *Service) StopCurrent() {
 	registrationIO := s.registrationIO
 	registrationTCP := s.registrationTCP
 	registrationPreviousTCP := s.registrationPreviousTCP
+	registrationPendingTCP := s.registrationPendingTCP
+	s.registrationPendingTCP = nil
 	securityServerIO := s.securityServerIO
 	clientPortReserve := s.clientPortReserve
 	s.registrationIO = nil
@@ -460,6 +464,9 @@ func (s *Service) StopCurrent() {
 	}
 	if registrationPreviousTCP != nil && registrationPreviousTCP != registrationTCP {
 		_ = registrationPreviousTCP.Close()
+	}
+	if registrationPendingTCP != nil {
+		_ = registrationPendingTCP.Close()
 	}
 	if securityServerIO != nil {
 		_ = securityServerIO.Close()

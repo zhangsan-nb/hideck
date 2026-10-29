@@ -31,6 +31,7 @@ func (s *Service) logRegisterFlowNegotiation(response *sipResponse) {
 	// Supported and 503s the extra REGISTER (hideck#8 / #6).
 	s.sipOutboundRequired = requiredOutbound
 	s.sipOutbound = requiredOutbound || pathOB || contactRegID
+	s.sipOutboundFlow.Store(s.sipOutbound)
 	if s.outboundContactOffered {
 		s.outboundContactRegistered = true
 	}

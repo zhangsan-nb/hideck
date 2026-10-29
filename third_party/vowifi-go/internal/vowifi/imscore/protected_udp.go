@@ -55,6 +55,23 @@ func (s *Service) startProtectedUDP(client, server securityMechanism) error {
 	return nil
 }
 
+// protectedUDPFor follows a refresh SA switch, which replaces the path but
+// keeps its port_us socket and this receiver. Until the replaced SAs are
+// retired, packets from the old port_pc keep using the old path.
+func (s *Service) protectedUDPFor(path *protectedUDPTransport, remote net.Addr) *protectedUDPTransport {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	current, retiring := s.protectedUDP, s.protectedUDPRetiring
+	if address, ok := remote.(*net.UDPAddr); ok && retiring != nil && retiring.server == path.server &&
+		address.IP.Equal(retiring.remoteClient.IP) && address.Port == retiring.remoteClient.Port {
+		return retiring
+	}
+	if current != nil && current.server == path.server {
+		return current
+	}
+	return path
+}
+
 func (path *protectedUDPTransport) close() {
 	_ = path.server.Close()
 	_ = path.client.Close()
@@ -78,7 +95,7 @@ func (s *Service) readProtectedUDP(path *protectedUDPTransport) {
 		// Retire this reader before entering serialized failure recovery.
 		s.networkDone.Done()
 		if readErr != nil {
-			s.handleProtectedUDPFailure(path, readErr)
+			s.handleProtectedUDPFailure(s.protectedUDPFor(path, nil), readErr)
 		}
 	}()
 	s.receiverStarted()
@@ -90,7 +107,7 @@ func (s *Service) readProtectedUDP(path *protectedUDPTransport) {
 			readErr = err
 			return
 		}
-		if err := s.dispatchProtectedUDP(path, remote, string(buffer[:n])); err != nil {
+		if err := s.dispatchProtectedUDP(s.protectedUDPFor(path, remote), remote, string(buffer[:n])); err != nil {
 			logging.WarnRate("ims-protected-udp-"+s.DeviceID(), "IMS protected UDP handling failed",
 				"device", s.DeviceID(), "err", err)
 		}
@@ -102,6 +119,7 @@ func (s *Service) dispatchProtectedUDP(path *protectedUDPTransport, remote net.A
 	if !ok || !address.IP.Equal(path.remoteClient.IP) || address.Port != path.remoteClient.Port {
 		return errors.New("imscore: protected UDP packet from an unnegotiated endpoint")
 	}
+	s.noteInboundOverNewSA(tcpPortFromAddr(path.server.LocalAddr()), address.Port)
 	peer := &protectedUDPPeer{service: s, path: path}
 	s.mu.RLock()
 	current := s.currentProtectedUDPPeerLocked(peer)
@@ -123,7 +141,8 @@ func (s *Service) dispatchProtectedUDP(path *protectedUDPTransport, remote net.A
 }
 
 func (s *Service) currentProtectedUDPPeerLocked(peer *protectedUDPPeer) bool {
-	return !s.stopped() && peer.path == s.protectedUDP && peer.path.registrar == s.registrar
+	return !s.stopped() && (peer.path == s.protectedUDP || peer.path == s.protectedUDPRetiring) &&
+		peer.path.registrar == s.registrar
 }
 
 func (s *Service) handleProtectedUDPFailure(path *protectedUDPTransport, cause error) {

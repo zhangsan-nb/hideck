@@ -126,7 +126,8 @@ func populatedTemplate(id string) carrier.IMSRegisterTemplate {
 			{Alg: "hmac-md5-96", EAlg: "aes-cbc", Prot: "esp", Mode: "trans"},
 		},
 		StrictSecurityServerOffer: true, AcceptRegisterContactWithoutUser: true, RPReportOverPortUS: true,
-		EnableInitialRejectFallback: true, FallbackIncludesServerParamsInSecCl: true,
+		RefreshOffersNewSecurityClient: true,
+		EnableInitialRejectFallback:    true, FallbackIncludesServerParamsInSecCl: true,
 		RegisterPolicy: carrier.IMSRegisterPolicy{
 			ID: "register", TemporaryStatusCodes: []int{408, 500}, ForbiddenStatusCodes: []int{403},
 			InitialRejectFallbackStatusCodes: []int{404, 488}, TemporaryRetrySeconds: 15,

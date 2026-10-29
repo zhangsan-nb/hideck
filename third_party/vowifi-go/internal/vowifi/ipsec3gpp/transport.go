@@ -26,7 +26,18 @@ type Transport struct {
 	transformErrors    atomic.Uint64
 	unknownInboundSPI  atomic.Uint64
 	lastUnknownInbound atomic.Pointer[UnknownESPDiagnostic]
+	// previous keeps protecting the flows of the replaced SA set until it is
+	// retired (TS 33.203 7.4.1a): packets this set does not select fall to it.
+	previous atomic.Pointer[Transport]
 }
+
+// SetPrevious installs this set alongside an established one. Outbound
+// packets go to the set whose ports they match; inbound ESP to the set that
+// owns the SPI.
+func (transport *Transport) SetPrevious(previous *Transport) { transport.previous.Store(previous) }
+
+// Previous returns the set still installed alongside this one, if any.
+func (transport *Transport) Previous() *Transport { return transport.previous.Load() }
 
 type TransportStats struct {
 	OutboundPackets    uint64
@@ -143,6 +154,9 @@ func (transport *Transport) TransformOutbound(packet []byte) ([]byte, bool, erro
 	}
 	flow := transport.matchOutbound(parsed)
 	if flow == nil {
+		if previous := transport.previous.Load(); previous != nil {
+			return previous.TransformOutbound(packet)
+		}
 		transport.passthroughPackets.Add(1)
 		return append([]byte(nil), packet...), false, nil
 	}
@@ -180,6 +194,9 @@ func (transport *Transport) TransformInbound(packet []byte) ([]byte, bool, error
 	}
 	flow := transport.inbound[readSPI(parsed.payload)]
 	if flow == nil {
+		if previous := transport.previous.Load(); previous != nil {
+			return previous.TransformInbound(packet)
+		}
 		transport.unknownInboundSPI.Add(1)
 		transport.recordUnknownESP(parsed)
 		return transport.inboundError(errors.New("ipsec3gpp: unknown inbound ESP SPI"))

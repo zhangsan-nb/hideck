@@ -12,3 +12,5 @@ ims_register_template:
   id: 2degrees_nz_53024_ios
   # The 200 to REGISTER lists our Contact without the user part.
   accept_register_contact_without_user: true
+  # Every protected refresh REGISTER that reused the active SPIs and port-c got 503.
+  refresh_offers_new_security_client: true

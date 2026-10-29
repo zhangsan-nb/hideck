@@ -189,6 +189,30 @@ func readInboundDialogSequence(handle *imscoreDialogHandle, request *sip.Request
 	return nil
 }
 
+// releaseSenders makes in-dialog requests use the current registration flow,
+// after a refresh switch moved it onto new SAs (TS 33.203 7.4.1a).
+func (r *dialogRegistry) releaseSenders() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	handles := make([]*imscoreDialogHandle, 0, len(r.handles))
+	for _, handle := range r.handles {
+		handles = append(handles, handle)
+	}
+	r.mu.RUnlock()
+	released := 0
+	for _, handle := range handles {
+		handle.mu.Lock()
+		if handle.sender != nil {
+			handle.sender = nil
+			released++
+		}
+		handle.mu.Unlock()
+	}
+	return released
+}
+
 func (r *dialogRegistry) closeAll() {
 	if r == nil {
 		return

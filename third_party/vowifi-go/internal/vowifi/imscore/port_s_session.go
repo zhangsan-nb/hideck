@@ -20,6 +20,9 @@ const (
 	portSCloseOther     = "other"
 	portSCloseTimeout   = "transport_timeout"
 	portSCloseDeadline  = "read_deadline"
+	// Closed by the UE when a refresh switch deleted the SAs under it; the
+	// P-CSCF reopens port-s over the new SAs (TS 33.203 7.4.1a).
+	portSCloseSARetired = "sa_retired"
 )
 
 type portSConnectionState struct {
@@ -27,6 +30,7 @@ type portSConnectionState struct {
 	openedAt     time.Time
 	registrar    string
 	localClosing bool
+	saRetired    bool
 }
 
 type portSSessionState struct {
@@ -105,6 +109,7 @@ func (s *Service) recordPortSClosed(conn net.Conn, err error, now time.Time) boo
 		return false
 	}
 	// Order close evidence against accepted UDP requests and failover commits.
+	var probe *portSTimeoutProbeEpisode
 	s.mu.Lock()
 	currentRegistrar := strings.TrimSpace(s.registrar)
 	s.portSSessionMu.Lock()
@@ -117,6 +122,9 @@ func (s *Service) recordPortSClosed(conn net.Conn, err error, now time.Time) boo
 	kind := classifyPortSClose(err)
 	if connection.localClosing {
 		kind = portSCloseLocal
+	}
+	if connection.saRetired {
+		kind = portSCloseSARetired
 	}
 	// Retired cleanup must not replace the latest failure. An older live
 	// connection still matters if it is the final downlink on this registrar.
@@ -134,6 +142,10 @@ func (s *Service) recordPortSClosed(conn net.Conn, err error, now time.Time) boo
 		s.portSSession.lastCloseReason = errorText(err)
 		s.portSSession.closedRegistrar = registrar
 		s.recordPortSTimeoutLocked(registrar, kind)
+		if kind == portSCloseTimeout && s.timeoutAwaitPreset() && !s.sipOutboundFlow.Load() {
+			probe = &portSTimeoutProbeEpisode{generation: s.portSSession.generation, registrar: currentRegistrar}
+			s.portSTimeoutProbe.Store(probe)
+		}
 	}
 	startFailover := false
 	if current && kind == portSClosePeerReset {
@@ -150,6 +162,11 @@ func (s *Service) recordPortSClosed(conn net.Conn, err error, now time.Time) boo
 		"close_kind", kind, "reason", errorText(err),
 		"lifetime", elapsedSince(connection.openedAt, now),
 		"last_inbound_at", lastInboundAt)
+	if probe != nil {
+		logging.Info("IMS port-s timed out; SMS reception stays ready until the probe REGISTER answers",
+			"device", s.DeviceID(), "pcscf", probe.registrar, "port_s_generation", probe.generation,
+			"carrier_preset", strings.TrimSpace(s.cfg.CarrierPresetID))
+	}
 	if startFailover {
 		s.startPendingPortSResetFailover()
 	}
@@ -190,6 +207,21 @@ func (s *Service) markPortSLocalClose(conn net.Conn) {
 	state, exists := s.portSSession.connections[conn]
 	if exists {
 		state.localClosing = true
+		s.portSSession.connections[conn] = state
+	}
+	s.portSSessionMu.Unlock()
+}
+
+// markPortSSARetired classifies the coming close of a port-s flow whose SAs a
+// refresh switch deleted.
+func (s *Service) markPortSSARetired(conn net.Conn) {
+	if s == nil || conn == nil {
+		return
+	}
+	s.portSSessionMu.Lock()
+	state, exists := s.portSSession.connections[conn]
+	if exists {
+		state.saRetired = true
 		s.portSSession.connections[conn] = state
 	}
 	s.portSSessionMu.Unlock()

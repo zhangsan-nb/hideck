@@ -56,7 +56,16 @@ func initDevicePhoneNumberTestDB(t *testing.T) {
 	if err := db.Init(dbPath); err != nil {
 		t.Fatalf("db.Init() error=%v", err)
 	}
-	t.Cleanup(func() { db.DB = nil })
+	sqlDB, err := db.DB.DB()
+	if err != nil {
+		t.Fatalf("db.DB.DB() error=%v", err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close test database: %v", err)
+		}
+		db.DB = nil
+	})
 }
 
 func loadDeviceTestSIMCardByIMSI(t *testing.T, imsi string) db.SIMCard {

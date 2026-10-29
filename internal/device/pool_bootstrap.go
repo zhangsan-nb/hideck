@@ -675,7 +675,7 @@ func (p *Pool) AddWorkerFromConfig(devCfg config.DeviceConfig) (*Worker, error) 
 				qmiCore.Stop()
 			}
 			m.Stop()
-			return nil, fmt.Errorf("启动 QMI Core 失败: %w", err)
+			return nil, fmt.Errorf("启动 QMI Core 失败 (control_device=%s): %w", w.Config.ControlDevice, err)
 		}
 	}
 
