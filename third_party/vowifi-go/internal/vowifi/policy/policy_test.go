@@ -157,9 +157,20 @@ func TestResolveEmbeddedCarrierPresets(t *testing.T) {
 		!CarrierPlanFromEffectiveConfig(twoDegrees).IMS.RegisterTemplate.RefreshOffersNewSecurityClient {
 		t.Fatalf("2degrees nz = %+v", twoDegrees.IMSRegisterTemplate)
 	}
+	if vodafoneDE := ResolveEffectiveCarrierConfig("262", "02"); vodafoneDE.PresetID != "vodafone_de_26202" ||
+		!CarrierPlanFromEffectiveConfig(vodafoneDE).IMS.RegisterTemplate.DisableMWISubscription {
+		t.Fatalf("vodafone de = %+v", vodafoneDE.IMSRegisterTemplate)
+	}
+	if telekomDE := ResolveEffectiveCarrierConfig("262", "01"); CarrierPlanFromEffectiveConfig(telekomDE).IMS.RegisterTemplate.DisableMWISubscription {
+		t.Fatalf("telekom de disables MWI: %+v", telekomDE.IMSRegisterTemplate)
+	}
 	if dito := ResolveEffectiveCarrierConfig("515", "66"); dito.PresetID != "dito_51566" ||
 		!CarrierPlanFromEffectiveConfig(dito).IMS.RegisterTemplate.RefreshOffersNewSecurityClient {
 		t.Fatalf("dito ph = %+v", dito.IMSRegisterTemplate)
+	}
+	if vfde := ResolveEffectiveCarrierConfig("262", "02"); vfde.PresetID != "vodafone_de_26202" ||
+		!CarrierPlanFromEffectiveConfig(vfde).IMS.RegisterTemplate.RefreshOffersNewSecurityClient {
+		t.Fatalf("vodafone de = %+v", vfde.IMSRegisterTemplate)
 	}
 	for _, plmn := range [][2]string{{"234", "15"}, {"515", "02"}, {"530", "01"}, {"530", "05"}, {"234", "87"}} {
 		if cfg := ResolveEffectiveCarrierConfig(plmn[0], plmn[1]); cfg.IMSRegisterTemplate.RefreshOffersNewSecurityClient {

@@ -118,9 +118,23 @@ func (s *Service) acceptSubscriptionNotification(raw string) (*subscriptionNotif
 	f.lifecycle.notifyVersion++
 	if state.state == "terminated" {
 		s.terminateNotifiedSubscriptionLocked(f, state, time.Now())
-	} else if state.expiresPresent {
-		f.lifecycle.notifyExpires = true
-		f.setExpiry(time.Now(), state.expires)
+	} else {
+		// Only a matching active or pending NOTIFY confirms the subscription;
+		// a 200 to SUBSCRIBE or a REGISTER success does not (hideck#102).
+		// While a failed attempt still waits for its retry, a NOTIFY on the
+		// older, still-valid subscription confirms nothing new.
+		eventPackage := subscriptionEventPackage(n.mwi)
+		if f.lifecycle.retryAt.IsZero() {
+			confirmation := subscriptionConfirmation{revision: f.lifecycle.retryRevision, now: time.Now()}
+			if failures := s.subscriptionRetries.subscriptionConfirmed(f.lifecycle.context.binding.identity, eventPackage, confirmation); failures != 0 {
+				logging.Info("IMS subscription confirmed; failure backoff cleared",
+					"device", s.DeviceID(), "event_package", eventPackage, "failures", failures, "state", state.state)
+			}
+		}
+		if state.expiresPresent {
+			f.lifecycle.notifyExpires = true
+			f.setExpiry(time.Now(), state.expires)
+		}
 	}
 	n.context, n.version = s.subscriptionContextLocked(), f.lifecycle.notifyVersion
 	if f.lifecycle.notifications == nil {

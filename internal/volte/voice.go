@@ -93,6 +93,7 @@ func (c *Controller) attachVoice(deviceID string) error {
 		c.ReconcileCalls(context.Background(), deviceID)
 		return nil
 	}
+	s.qmiVoiceStarted = true
 	gen := s.gen
 	c.mu.Unlock()
 	unsubscribe, err := c.host.SubscribeVoiceStatus(deviceID, func(info *qmi.VoiceAllCallInfo) {
@@ -149,6 +150,7 @@ func (c *Controller) ReconcileCalls(ctx context.Context, deviceID string) {
 	var vs *voiceSession
 	var gen uint64
 	if s != nil {
+		s.qmiVoiceStarted = true
 		if s.voice == nil {
 			s.voice = newVoiceSession()
 		}
@@ -893,7 +895,7 @@ func (c *Controller) lookupActive(deviceID string) (nativeCall, bool) {
 	if s == nil || s.voice == nil {
 		return nativeCall{}, false
 	}
-	for _, call := range s.voice.active {
+	for _, call := range s.voice.list() {
 		if call.State != "completed" {
 			return call, true
 		}

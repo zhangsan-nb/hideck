@@ -16,6 +16,7 @@ import (
 	"github.com/iniwex5/vowifi-go/internal/vowifi/smsdelivery"
 	"github.com/iniwex5/vowifi-go/internal/vowifi/voice"
 	"github.com/iniwex5/vowifi-go/runtimehost/eventhost"
+	"github.com/iniwex5/vowifi-go/runtimehost/identity"
 	"github.com/iniwex5/vowifi-go/runtimehost/messaging"
 	"github.com/iniwex5/vowifi-go/runtimehost/voicehost"
 )
@@ -751,6 +752,53 @@ func TestRuntimeCoreAdapterPreservesSubscriptionRejectionStore(t *testing.T) {
 	}
 }
 
+type mwiPolicyDeliveryStore struct {
+	messaging.DeliveryStore
+	rejected int
+}
+
+func (store *mwiPolicyDeliveryStore) LoadMWISubscriptionPolicy(string, string) (string, int, error) {
+	return "on", store.rejected, nil
+}
+
+func (store *mwiPolicyDeliveryStore) SaveMWISubscriptionRejection(_, _ string, status int) error {
+	store.rejected = status
+	return nil
+}
+
+func TestCoreRequestCarriesMWIPolicyStore(t *testing.T) {
+	request := restoredRuntimeRequest()
+	request.DeliveryStore = &mwiPolicyDeliveryStore{DeliveryStore: &memDeliveryStore{}}
+	policy := request.coreRequest().MWIPolicyStore
+	if policy == nil {
+		t.Fatal("core request dropped the MWI policy store")
+	}
+	if err := policy.SaveMWISubscriptionRejection("iccid", "identity", 405); err != nil {
+		t.Fatal(err)
+	}
+	if mode, rejected, err := policy.LoadMWISubscriptionPolicy("iccid", "identity"); err != nil || mode != "on" || rejected != 405 {
+		t.Fatalf("mode=%q rejected=%d err=%v", mode, rejected, err)
+	}
+	request.DeliveryStore = &memDeliveryStore{}
+	if request.coreRequest().MWIPolicyStore != nil {
+		t.Fatal("core request invented an MWI policy store")
+	}
+}
+
+func TestCustomTunnelStartWiresMWIPolicy(t *testing.T) {
+	cfg := &imscore.IMSConfig{}
+	applyDeliveryStores(cfg, &mwiPolicyDeliveryStore{DeliveryStore: &memDeliveryStore{}})
+	if cfg.MWIPolicyStore == nil || cfg.SubscriptionRegistrations == nil || cfg.DeliveryStore == nil {
+		t.Fatalf("custom tunnel IMS config = %+v", cfg)
+	}
+	template, _, err := imsRegisterConfigForPrepared(&identity.PreparedSession{
+		Profile: identity.Profile{MCC: "262", MNC: "02"},
+	})
+	if err != nil || !template.DisableMWISubscription {
+		t.Fatalf("Vodafone DE custom tunnel template = %+v err=%v", template, err)
+	}
+}
+
 func TestDeliveryStoreAdaptersDoNotInventFragmentLifecycleCapability(t *testing.T) {
 	underlying := &memDeliveryStore{}
 	store := fragmentOnlyDeliveryStore{DeliveryStore: underlying, fragments: underlying}
@@ -835,4 +883,12 @@ func TestStartInstanceAsync(t *testing.T) {
 		t.Fatal("runtime runner was not started")
 	}
 	cancel()
+}
+
+func TestCoreRequestCarriesHostSubscriptionRetries(t *testing.T) {
+	request := restoredRuntimeRequest()
+	request.SubscriptionRetries = NewSubscriptionRetries()
+	if request.coreRequest().SubscriptionRetries != request.SubscriptionRetries {
+		t.Fatal("core request dropped the host subscription retry store")
+	}
 }

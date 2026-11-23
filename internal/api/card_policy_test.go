@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,6 +24,14 @@ type cardPolicyStoreStub struct {
 	getErr     error
 	resolveErr error
 	upsertErr  error
+	cleared    []string
+	remembered bool
+	clearErr   error
+}
+
+func (s *cardPolicyStoreStub) ClearMWIRejections(iccid string) (bool, error) {
+	s.cleared = append(s.cleared, iccid)
+	return s.remembered, s.clearErr
 }
 
 type cardPolicyRestarterStub struct {
@@ -676,5 +685,225 @@ func TestLebaraUKRFLockClassificationErrorBlocksNetworkMutation(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "识别 Lebara UK 射频策略失败") {
 		t.Fatalf("classification failure was hidden: %s", rec.Body.String())
+	}
+}
+
+func TestPutCardPolicyMWIMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		body      string
+		code      int
+		mode      string
+		redetects bool
+	}{
+		// Saving "on" again is not a switch to on (hideck#102).
+		{body: `{"mwi_mode":"on"}`, code: http.StatusOK, mode: "on"},
+		{body: `{"mwi_mode":"off"}`, code: http.StatusOK, mode: "off"},
+		{body: `{"mwi_mode":"auto"}`, code: http.StatusOK, mode: "auto"},
+		{body: `{"apn":"ims"}`, code: http.StatusOK, mode: "on"},
+		{body: `{"mwi_mode":"maybe"}`, code: http.StatusBadRequest, mode: "on"},
+	} {
+		store := &cardPolicyStoreStub{policy: db.CardPolicy{ICCID: "8986005", MWIMode: "on", Source: "user"}}
+		s := &Server{cardPolicies: store}
+		r := gin.New()
+		r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != tc.code || store.policy.MWIMode != tc.mode {
+			t.Fatalf("%s: code=%d mode=%q body=%s", tc.body, w.Code, store.policy.MWIMode, w.Body.String())
+		}
+		if redetected := len(store.cleared) == 1 && store.cleared[0] == "8986005"; redetected != tc.redetects {
+			t.Fatalf("%s: cleared=%v", tc.body, store.cleared)
+		}
+	}
+}
+
+func TestPutCardPolicyMWIRedetectReconnectsOnlyWhenARejectionWasCleared(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		remembered, vowifi, reconnect bool
+	}{{true, true, true}, {false, true, false}, {true, false, false}} {
+		store := &cardPolicyStoreStub{
+			policy:     db.CardPolicy{ICCID: "8986005", MWIMode: "auto", VoWiFiEnabled: tc.vowifi, Source: "user"},
+			remembered: tc.remembered,
+		}
+		redetector := &cardPolicyMWIRedetectorStub{}
+		s := &Server{cardPolicies: store, cardPolicyMWIRedetector: redetector}
+		r := gin.New()
+		r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(`{"mwi_mode":"on"}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || len(redetector.reconnects) != 1 || redetector.reconnects[0] != tc.reconnect {
+			t.Fatalf("%+v: code=%d reconnects=%v body=%s", tc, w.Code, redetector.reconnects, w.Body.String())
+		}
+	}
+}
+
+func TestPutCardPolicyMWIClearFailureReportsSavedPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &cardPolicyStoreStub{
+		policy:   db.CardPolicy{ICCID: "8986005", MWIMode: "off", Source: "user"},
+		clearErr: errors.New("database is locked"),
+	}
+	s := &Server{cardPolicies: store}
+	r := gin.New()
+	r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(`{"mwi_mode":"on"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError || store.policy.MWIMode != "on" ||
+		!strings.Contains(w.Body.String(), cardPolicySavedMWIClearFailedCode) {
+		t.Fatalf("code=%d mode=%q body=%s", w.Code, store.policy.MWIMode, w.Body.String())
+	}
+}
+
+func TestPutCardPolicyExplicitMWIRedetectReconnectsWithoutARecord(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &cardPolicyStoreStub{policy: db.CardPolicy{ICCID: "8986005", MWIMode: "on", VoWiFiEnabled: true, Source: "user"}}
+	redetector := &cardPolicyMWIRedetectorStub{}
+	s := &Server{cardPolicies: store, cardPolicyMWIRedetector: redetector}
+	r := gin.New()
+	r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(`{"mwi_mode":"on","redetect_mwi":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || strings.Join(redetector.iccids, ",") != "8986005" || !redetector.reconnects[0] {
+		t.Fatalf("code=%d redetected=%v reconnects=%v body=%s", w.Code, redetector.iccids, redetector.reconnects, w.Body.String())
+	}
+}
+
+type cardPolicyRestartCounter struct{ calls int }
+
+func (s *cardPolicyRestartCounter) RestartVoWiFiForICCID(string) error {
+	s.calls++
+	return nil
+}
+
+type cardPolicyMWIRedetectorStub struct {
+	iccids     []string
+	reconnects []bool
+	err        error
+}
+
+func (s *cardPolicyMWIRedetectorStub) RedetectMWIForICCID(iccid string, reconnect bool) error {
+	s.iccids, s.reconnects = append(s.iccids, iccid), append(s.reconnects, reconnect)
+	return s.err
+}
+
+// Only a switch to "on" or the redetect button clears MWI rejection records
+// and the card's local MWI backoff; reconnecting is left to the redetector,
+// which only touches running runtimes (hideck#102).
+func TestPutCardPolicyMWIRedetectOnlyOnSwitchOrRedetect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name                string
+		previous, body      string
+		vowifi, remembered  bool
+		redetect, reconnect bool
+		proxyRestart        bool
+	}{
+		{name: "off to on without a record wakes", previous: "off", body: `{"mwi_mode":"on"}`, vowifi: true, redetect: true},
+		{name: "auto to on with a record reconnects", previous: "auto", body: `{"mwi_mode":"on"}`, vowifi: true, remembered: true, redetect: true, reconnect: true},
+		{name: "saving on again does nothing", previous: "on", body: `{"mwi_mode":"on"}`, vowifi: true, remembered: true},
+		{name: "redetect reconnects", previous: "on", body: `{"mwi_mode":"on","redetect_mwi":true}`, vowifi: true, redetect: true, reconnect: true},
+		{name: "redetect with VoWiFi off only resets", previous: "on", body: `{"mwi_mode":"on","redetect_mwi":true}`, redetect: true},
+		{name: "redetect alone reconnects", previous: "on", body: `{"redetect_mwi":true}`, vowifi: true, redetect: true, reconnect: true},
+		{name: "redetect alone while off does nothing", previous: "off", body: `{"redetect_mwi":true}`, vowifi: true},
+		{name: "turning off does nothing", previous: "on", body: `{"mwi_mode":"off"}`, vowifi: true},
+		{name: "a proxy change does the one reconnect", previous: "off", body: `{"mwi_mode":"on","vowifi_upstream_proxy_id":"direct"}`, vowifi: true, remembered: true, redetect: true, proxyRestart: true},
+	} {
+		store := &cardPolicyStoreStub{
+			policy:     db.CardPolicy{ICCID: "8986005", MWIMode: tc.previous, VoWiFiEnabled: tc.vowifi, Source: "user"},
+			remembered: tc.remembered,
+		}
+		restarter := &cardPolicyRestartCounter{}
+		redetector := &cardPolicyMWIRedetectorStub{}
+		s := &Server{cardPolicies: store, cardPolicyRestarter: restarter, cardPolicyMWIRedetector: redetector}
+		r := gin.New()
+		r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: code=%d body=%s", tc.name, w.Code, w.Body.String())
+		}
+		if cleared := len(store.cleared) == 1; cleared != tc.redetect {
+			t.Fatalf("%s: cleared records=%v", tc.name, store.cleared)
+		}
+		if redetected := strings.Join(redetector.iccids, ",") == "8986005"; redetected != tc.redetect ||
+			(redetected && redetector.reconnects[0] != tc.reconnect) {
+			t.Fatalf("%s: redetected=%v reconnects=%v", tc.name, redetector.iccids, redetector.reconnects)
+		}
+		if want := map[bool]int{false: 0, true: 1}[tc.proxyRestart]; restarter.calls != want {
+			t.Fatalf("%s: proxy restarts=%d, want %d", tc.name, restarter.calls, want)
+		}
+	}
+}
+
+func TestPutCardPolicyMWIReconnectFailureReportsSavedPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &cardPolicyStoreStub{policy: db.CardPolicy{ICCID: "8986005", MWIMode: "on", VoWiFiEnabled: true, Source: "user"}}
+	s := &Server{cardPolicies: store, cardPolicyMWIRedetector: &cardPolicyMWIRedetectorStub{err: errors.New("restart unavailable")}}
+	r := gin.New()
+	r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy", strings.NewReader(`{"redetect_mwi":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), cardPolicySavedRestartFailedCode) {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+type cardPolicyMWIOrderStub struct {
+	calls      []string
+	restartErr error
+}
+
+func (s *cardPolicyMWIOrderStub) RestartVoWiFiForICCID(string) error {
+	s.calls = append(s.calls, "restart")
+	return s.restartErr
+}
+
+func (s *cardPolicyMWIOrderStub) RedetectMWIForICCID(_ string, reconnect bool) error {
+	s.calls = append(s.calls, fmt.Sprintf("redetect reconnect=%t", reconnect))
+	return nil
+}
+
+// With a proxy change in the same request the proxy reconnect goes first, so
+// the MWI wake reaches the new runtime; if it fails, MWI is not touched.
+func TestPutCardPolicyProxyReconnectPrecedesMWIRedetect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		restartErr error
+		code       int
+		calls      string
+	}{
+		{code: http.StatusOK, calls: "restart,redetect reconnect=false"},
+		{restartErr: errors.New("restart unavailable"), code: http.StatusInternalServerError, calls: "restart"},
+	} {
+		store := &cardPolicyStoreStub{
+			policy:     db.CardPolicy{ICCID: "8986005", MWIMode: "off", VoWiFiEnabled: true, Source: "user"},
+			remembered: true,
+		}
+		order := &cardPolicyMWIOrderStub{restartErr: tc.restartErr}
+		s := &Server{cardPolicies: store, cardPolicyRestarter: order, cardPolicyMWIRedetector: order}
+		r := gin.New()
+		r.PUT("/api/cards/:iccid/policy", s.handlePutCardPolicy)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/cards/8986005/policy",
+			strings.NewReader(`{"mwi_mode":"on","vowifi_upstream_proxy_id":"direct"}`))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != tc.code || strings.Join(order.calls, ",") != tc.calls {
+			t.Fatalf("code=%d calls=%v body=%s", w.Code, order.calls, w.Body.String())
+		}
 	}
 }

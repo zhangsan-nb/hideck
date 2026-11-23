@@ -58,6 +58,8 @@ type IMSConfig struct {
 	RegisterTemplate           IMSRegisterTemplate
 	RegistrarPenalties         *RegistrarPenaltyStore
 	SubscriptionRegistrations  *SubscriptionRegistrationStore
+	SubscriptionRetries        *SubscriptionRetryStore
+	MWIPolicyStore             MWISubscriptionPolicyStore
 	AllowEmergencyRegistration bool
 	OnLocalAddressChange       func(oldIP, newIP net.IP) error
 }
@@ -159,4 +161,5 @@ func mergeOriginalRegisterTemplate(cfg *IMSConfig) {
 	}
 	current.IncludePANIAuthenticated = current.IncludePANIAuthenticated || template.IncludePANIAuthenticated
 	current.StrictSecurityServerOffer = current.StrictSecurityServerOffer || template.StrictSecurityServerOffer
+	current.DisableMWISubscription = current.DisableMWISubscription || template.DisableMWISubscription
 }

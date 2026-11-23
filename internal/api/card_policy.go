@@ -16,15 +16,21 @@ import (
 var errCardPolicyIdentityUnavailable = errors.New("SIM 身份未就绪，无法保存卡策略")
 
 const cardPolicySavedRestartFailedCode = "card_policy_saved_restart_failed"
+const cardPolicySavedMWIClearFailedCode = "card_policy_saved_mwi_clear_failed"
 
 type cardPolicyStore interface {
 	Get(string) (db.CardPolicy, error)
 	Resolve(string) (db.CardPolicy, error)
 	Upsert(db.CardPolicy) error
+	ClearMWIRejections(string) (bool, error)
 }
 
 type cardPolicyVoWiFiRestarter interface {
 	RestartVoWiFiForICCID(string) error
+}
+
+type cardPolicyMWIRedetector interface {
+	RedetectMWIForICCID(iccid string, reconnect bool) error
 }
 
 type databaseCardPolicyStore struct{}
@@ -39,6 +45,10 @@ func (databaseCardPolicyStore) Resolve(iccid string) (db.CardPolicy, error) {
 
 func (databaseCardPolicyStore) Upsert(policy db.CardPolicy) error {
 	return db.UpsertCardPolicy(policy)
+}
+
+func (databaseCardPolicyStore) ClearMWIRejections(iccid string) (bool, error) {
+	return db.DeleteIMSMWIRejections(iccid)
 }
 
 func (s *Server) cardPolicyStore() cardPolicyStore {
@@ -116,6 +126,8 @@ type cardPolicyPatchRequest struct {
 	DataStrategy          *string `json:"data_strategy"`
 	VowifiUpstreamProxyID *string `json:"vowifi_upstream_proxy_id"`
 	LocalPhoneOverride    *string `json:"local_phone_override"`
+	MWIMode               *string `json:"mwi_mode"`
+	RedetectMWI           bool    `json:"redetect_mwi"`
 }
 
 func (s *Server) handlePutCardPolicy(c *gin.Context) {
@@ -144,6 +156,7 @@ func (s *Server) usePutCardPolicy(c businessContext) {
 		return
 	}
 	previousProxyID := pol.VowifiUpstreamProxyID
+	previousMWIMode := db.NormalizeMWIMode(pol.MWIMode)
 
 	class, classifyErr := s.classifyLebaraUKForICCID(businessRequestContext(c), iccid)
 	if classifyErr != nil {
@@ -209,6 +222,14 @@ func (s *Server) usePutCardPolicy(c businessContext) {
 		}
 		pol.LocalPhoneOverride = phone
 	}
+	if req.MWIMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.MWIMode))
+		if db.NormalizeMWIMode(mode) != mode {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "mwi_mode 只能是 auto、on 或 off"})
+			return
+		}
+		pol.MWIMode = mode
+	}
 	pol.Source = "user"
 
 	if err := s.cardPolicyStore().Upsert(pol); err != nil {
@@ -216,18 +237,60 @@ func (s *Server) usePutCardPolicy(c businessContext) {
 		return
 	}
 
-	if req.VowifiUpstreamProxyID != nil && previousProxyID != pol.VowifiUpstreamProxyID && pol.VoWiFiEnabled {
-		if err := s.restartVoWiFiForCardPolicy(pol.ICCID); err != nil {
-			logger.Warn("卡策略前置代理已保存，但 WiFi calling 重连失败",
-				"iccid", pol.ICCID,
-				"upstream_proxy_id", pol.VowifiUpstreamProxyID,
-				"err", err)
+	proxyChanged := req.VowifiUpstreamProxyID != nil && previousProxyID != pol.VowifiUpstreamProxyID && pol.VoWiFiEnabled
+	reconnectFailed := func(err error, fields ...any) {
+		logger.Warn("卡策略已保存，但 WiFi calling 重连失败", append([]any{"iccid", pol.ICCID, "err", err}, fields...)...)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  "error",
+			"code":    cardPolicySavedRestartFailedCode,
+			"message": "卡策略已保存，但 WiFi calling 重连失败: " + err.Error(),
+			"policy":  pol,
+		})
+	}
+
+	// Choosing "on" re-detects MWI support by clearing the records left by an
+	// explicit network rejection (405/489). The running registration still holds
+	// that rejection in memory, so reconnect WiFi calling when a record was cleared.
+	// Only identities stored in ims_mwi_rejections are known here; a message-summary
+	// 489 left in the generic table before the upgrade expires with its registration.
+	// Only a switch to "on" or the redetect button does this; saving "on" again
+	// does not, and a device without a running runtime is not started (hideck#102).
+	redetectMWI, mwiReconnect := false, false
+	if pol.MWIMode == db.MWIModeOn && ((req.MWIMode != nil && previousMWIMode != db.MWIModeOn) || req.RedetectMWI) {
+		redetectMWI = true
+		cleared, err := s.cardPolicyStore().ClearMWIRejections(pol.ICCID)
+		if err != nil {
+			logger.Warn("卡策略已保存，但清除 MWI 拒绝记录失败", "iccid", pol.ICCID, "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"status":  "error",
-				"code":    cardPolicySavedRestartFailedCode,
-				"message": "卡策略已保存，但 WiFi calling 重连失败: " + err.Error(),
+				"code":    cardPolicySavedMWIClearFailedCode,
+				"message": "卡策略已保存，但清除语音信箱不支持记录失败: " + err.Error(),
 				"policy":  pol,
 			})
+			return
+		}
+		// The redetect button always reconnects: if the reconnect after an earlier
+		// clear failed, the record is already gone and cleared alone would never retry.
+		// A proxy change below reconnects anyway.
+		mwiReconnect = (cleared || req.RedetectMWI) && pol.VoWiFiEnabled && !proxyChanged
+		if cleared {
+			logger.Info("已清除 MWI 拒绝记录，重新检测语音信箱提示", "iccid", pol.ICCID, "reconnect", mwiReconnect || proxyChanged)
+		}
+	}
+
+	if proxyChanged {
+		if err := s.restartVoWiFiForCardPolicy(pol.ICCID); err != nil {
+			reconnectFailed(err, "upstream_proxy_id", pol.VowifiUpstreamProxyID, "proxy_changed", true)
+			return
+		}
+	}
+	// The card's local MWI backoff is cleared in the host-held state before an
+	// MWI reconnect, so the new runtime starts from it; after a proxy reconnect
+	// the wake reaches the new runtime. A network wait or MWI stop state still
+	// applies.
+	if redetectMWI {
+		if err := s.redetectMWIForCardPolicy(pol.ICCID, mwiReconnect); err != nil {
+			reconnectFailed(err, "redetect_mwi", true)
 			return
 		}
 	}
@@ -243,6 +306,20 @@ func (s *Server) restartVoWiFiForCardPolicy(iccid string) error {
 		return errors.New("设备池未初始化")
 	}
 	return s.pool.RestartVoWiFiForICCID(iccid)
+}
+
+func (s *Server) redetectMWIForCardPolicy(iccid string, reconnect bool) error {
+	if s.cardPolicyMWIRedetector != nil {
+		return s.cardPolicyMWIRedetector.RedetectMWIForICCID(iccid, reconnect)
+	}
+	if s.pool == nil {
+		// Only tests run without a pool; resetting nothing is not a failure.
+		if !reconnect {
+			return nil
+		}
+		return errors.New("设备池未初始化")
+	}
+	return s.pool.RedetectMWIForICCID(iccid, reconnect)
 }
 
 func normalizeCardVoWiFiUpstreamProxyID(value string) (string, error) {

@@ -181,6 +181,12 @@ type workerLifecycleOwner struct {
 }
 
 type Pool struct {
+	// qmiUSBUnsticks keeps the last USB control-plane reset per USB path. A
+	// reset drops the modem and the Worker is rebuilt, so the cooldown cannot
+	// live on the Worker alone (hideck#94: 173 resets about 38 s apart).
+	qmiUSBUnsticksMu sync.Mutex
+	qmiUSBUnsticks   map[string]*qmiUSBUnstickRecord
+
 	mbnService      *mbn.Service
 	outboundLimiter OutboundLimiter
 	workers         map[string]*Worker
@@ -1906,19 +1912,12 @@ func (p *Pool) collectRescanHardware(discovered []QMIDevice, liveWorkerIndex Wor
 	var hardware []CompatibleModem
 	for i := range discovered {
 		raw := discovered[i]
-		var imei string
-		if liveInfo, ok := liveWorkerIndex.Lookup(raw.ControlPath, raw.USBPath, raw.NetInterface); ok {
-			if containsPort(raw.ATPorts, liveInfo.ATPort) {
-				raw.ATPort = liveInfo.ATPort
-			}
-			if liveInfo.IMEI != "" {
-				imei = liveInfo.IMEI
-			} else {
-				raw, imei = enrichDiscoveredQMIDeviceATFirst(raw, 1600*time.Millisecond, true)
-			}
-		} else {
-			raw, imei = enrichDiscoveredQMIDeviceATFirst(raw, 1600*time.Millisecond, true)
+		// Paths are attachment hints, never proof that the old worker still
+		// owns this device after USB enumeration. Always read its identity.
+		if liveInfo, ok := liveWorkerIndex.Lookup(raw.ControlPath, raw.USBPath, raw.NetInterface); ok && containsPort(raw.ATPorts, liveInfo.ATPort) {
+			raw.ATPort = liveInfo.ATPort
 		}
+		raw, imei := enrichDiscoveredQMIDeviceATFirst(raw, 1600*time.Millisecond, true)
 		logger.Debug("扫描到设备",
 			"imei", imei,
 			"interface", raw.NetInterface,

@@ -66,6 +66,10 @@ func (s *Service) subscriptionSent(result subscriptionResult, mwi bool) error {
 		return errSubscriptionUsageChanged
 	}
 	at := time.Now()
+	// Capture at dispatch: a queued refresh must not confirm newer failures
+	// using NOTIFYs for the previous attempt, including from another Service.
+	f.lifecycle.retryRevision = s.subscriptionRetries.subscriptionRetry(
+		result.context.binding.identity, subscriptionEventPackage(mwi)).revision
 	f.lifecycle.sentAt = at
 	// A NOTIFY received while this refresh was queued only updates the old
 	// lifetime; it cannot override the not-yet-sent refresh's response.
@@ -136,6 +140,9 @@ func (s *Service) failSubscriptionUsageLocked(f subscriptionFields, result subsc
 				subscriptionEventPackage(f.mwi),
 				status,
 			)
+			if f.mwi {
+				s.rememberMWIRejectionLocked(result.context.binding, status)
+			}
 		} else {
 			f.lifecycle.rejectedStatus = status
 		}
@@ -158,7 +165,7 @@ func (s *Service) failSubscriptionUsageLocked(f subscriptionFields, result subsc
 	if f.lifecycle.unsubscribing {
 		return result.err
 	}
-	delay := f.refreshDelay(registerExpires(s.cfg))
+	var networkWait time.Duration
 	if result.response != nil {
 		values := make([]string, 0, 1)
 		for _, header := range result.response.GetHeaders("Retry-After") {
@@ -168,11 +175,9 @@ func (s *Service) failSubscriptionUsageLocked(f subscriptionFields, result subsc
 		if err != nil {
 			*f.lastErr = fmt.Sprintf("%v; %v", result.err, err)
 		}
-		if retry > delay {
-			delay = retry
-		}
+		networkWait = retry
 	}
-	f.scheduleRetry(time.Now().Add(delay))
+	f.scheduleRetry(s.subscriptionFailureRetryLocked(f, result.context.binding, time.Now(), networkWait))
 	return result.err
 }
 

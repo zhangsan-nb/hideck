@@ -1,6 +1,7 @@
 package volte
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -44,12 +45,15 @@ func diagnosticsForPCM(pcm PCMPort) pcmDiagnostics {
 
 type PCMBridge struct {
 	conn       net.PacketConn
-	remoteMu   sync.Mutex
+	mediaMu    sync.Mutex
 	remote     net.Addr
+	generation uint64
+	buffer     *adaptivePCMBuffer
 	pcm        PCMPort
 	listenOnly bool
 	closed     chan struct{}
 	closeOnce  sync.Once
+	closeErr   error // Written inside closeOnce; repeated Close preserves failures.
 	workers    sync.WaitGroup
 	seq        uint16
 	ts         uint32
@@ -63,9 +67,10 @@ type PCMBridge struct {
 }
 
 type pcmRTPArrival struct {
-	packet   *rtp.Packet
-	remote   net.Addr
-	received time.Time
+	packet     *rtp.Packet
+	remote     net.Addr
+	received   time.Time
+	generation uint64
 }
 
 type pcmWriteLogState struct {
@@ -74,31 +79,11 @@ type pcmWriteLogState struct {
 }
 
 func NewPCMBridge(conn net.PacketConn, remote net.Addr, pcm PCMPort, listenOnly bool) *PCMBridge {
-	b := &PCMBridge{conn: conn, remote: remote, pcm: pcm, listenOnly: listenOnly, closed: make(chan struct{})}
+	b := &PCMBridge{conn: conn, remote: remote, pcm: pcm, listenOnly: listenOnly, closed: make(chan struct{}), buffer: newAdaptivePCMBuffer()}
 	b.workers.Add(2)
 	go b.downlink()
 	go b.uplink()
 	return b
-}
-
-func (b *PCMBridge) setRemote(addr net.Addr) {
-	if b == nil || addr == nil {
-		return
-	}
-	b.remoteMu.Lock()
-	if b.remote == nil {
-		b.remote = addr
-	}
-	b.remoteMu.Unlock()
-}
-
-func (b *PCMBridge) getRemote() net.Addr {
-	if b == nil {
-		return nil
-	}
-	b.remoteMu.Lock()
-	defer b.remoteMu.Unlock()
-	return b.remote
 }
 
 func (b *PCMBridge) Stats() (toPCM, fromPCM, silent, lost, overflow uint64) {
@@ -106,14 +91,13 @@ func (b *PCMBridge) Stats() (toPCM, fromPCM, silent, lost, overflow uint64) {
 }
 
 func (b *PCMBridge) Close() error {
-	var err error
 	b.closeOnce.Do(func() {
 		close(b.closed)
 		if b.conn != nil {
-			err = b.conn.Close()
+			b.closeErr = b.conn.Close()
 		}
 		if b.pcm != nil {
-			_ = b.pcm.Close()
+			b.closeErr = errors.Join(b.closeErr, b.pcm.Close())
 		}
 		b.workers.Wait()
 		diagnostics := diagnosticsForPCM(b.pcm)
@@ -132,7 +116,7 @@ func (b *PCMBridge) Close() error {
 			"jitter_concealed", jitter.Concealed, "jitter_trimmed", jitter.Trimmed,
 			"jitter_rebuffers", jitter.Rebuffers, "jitter_restarts", jitter.Restarts)
 	})
-	return err
+	return b.closeErr
 }
 
 func (b *PCMBridge) downlink() {
@@ -146,8 +130,7 @@ func (b *PCMBridge) downlink() {
 	defer func() { <-readerDone }()
 	ticker := time.NewTicker(pcmuFrameDuration)
 	defer ticker.Stop()
-	buffer := newAdaptivePCMBuffer()
-	defer func() { b.setJitterStats(buffer.stats()) }()
+	defer b.saveJitterStats()
 	writeState := &pcmWriteLogState{}
 	for {
 		select {
@@ -157,11 +140,9 @@ func (b *PCMBridge) downlink() {
 			if !ok {
 				return
 			}
-			b.setRemote(arrival.remote)
-			buffer.push(arrival.packet, arrival.received)
+			b.queueDownlink(arrival)
 		case <-ticker.C:
-			packet, kind := buffer.pop()
-			b.playDownlink(packet, kind, writeState)
+			b.playBufferedDownlink(writeState)
 		}
 	}
 }
@@ -186,7 +167,10 @@ func (b *PCMBridge) readDownlink(destination chan<- pcmRTPArrival) {
 			b.lost.Add(1)
 			continue
 		}
-		arrival := pcmRTPArrival{packet: packet, remote: addr, received: time.Now()}
+		arrival, accepted := b.acceptArrival(pcmRTPArrival{packet: packet, remote: addr, received: time.Now()})
+		if !accepted {
+			continue
+		}
 		select {
 		case destination <- arrival:
 		case <-b.closed:
@@ -250,7 +234,7 @@ func (b *PCMBridge) uplink() {
 		case <-b.closed:
 			return
 		case <-ticker.C:
-			remote := b.getRemote()
+			remote, generation := b.mediaEndpoint()
 			if b.conn == nil || remote == nil {
 				continue
 			}
@@ -270,7 +254,7 @@ func (b *PCMBridge) uplink() {
 			pkt := encodePCMURTP(b.seq, b.ts, payload)
 			b.seq++
 			b.ts += pcmuFrameSamples
-			if _, err := b.conn.WriteTo(pkt, remote); err != nil {
+			if err := b.writeUplink(pkt, generation); err != nil {
 				return
 			}
 		}

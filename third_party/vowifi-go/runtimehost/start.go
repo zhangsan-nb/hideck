@@ -63,7 +63,17 @@ type StartRequest struct {
 
 	TunnelFactory TunnelFactory
 	IMSFactory    IMSFactory
+
+	// SubscriptionRetries carries SUBSCRIBE failure backoff across runtimes;
+	// the host keeps one per process. Nil starts this runtime from scratch.
+	SubscriptionRetries *SubscriptionRetries
 }
+
+// SubscriptionRetries is the SUBSCRIBE failure backoff of every IMS identity
+// a host runs, kept in memory for the life of the process (hideck#102).
+type SubscriptionRetries = imscore.SubscriptionRetryStore
+
+func NewSubscriptionRetries() *SubscriptionRetries { return imscore.NewSubscriptionRetryStore() }
 
 // ModemAccessAdapter preserves the current name for the identity access ABI.
 type ModemAccessAdapter = identity.AccessAdapter
@@ -490,18 +500,27 @@ func imscoreFromPrepared(req StartRequest, tunnel Tunnel) (*imscore.Service, err
 	if req.Dispatch != nil {
 		eventBus.Subscribe(&imsEventBridge{dispatcher: req.Dispatch})
 	}
-	if req.DeliveryStore != nil {
-		cfg.DeliveryStore = newDeliveryStoreAdapter(req.DeliveryStore)
-		cfg.SubscriptionRegistrations = imscore.NewPersistentSubscriptionRegistrationStore(
-			runtimeCoreSubscriptionRejectionStore(req.DeliveryStore),
-		)
-	}
+	applyDeliveryStores(cfg, req.DeliveryStore)
+	cfg.SubscriptionRetries = req.SubscriptionRetries
 	svc, err := imscore.New(cfg)
 	if err != nil {
 		_ = imsNetwork.Close()
 		return nil, err
 	}
 	return svc, nil
+}
+
+// applyDeliveryStores wires the host store into a custom-tunnel IMS service the
+// same way the runtimecore path does.
+func applyDeliveryStores(cfg *imscore.IMSConfig, store messaging.DeliveryStore) {
+	if store == nil {
+		return
+	}
+	cfg.DeliveryStore = newDeliveryStoreAdapter(store)
+	cfg.SubscriptionRegistrations = imscore.NewPersistentSubscriptionRegistrationStore(
+		runtimeCoreSubscriptionRejectionStore(store),
+	)
+	cfg.MWIPolicyStore = runtimeCoreMWIPolicyStore(store)
 }
 
 func firstNonEmptyString(values ...string) string {

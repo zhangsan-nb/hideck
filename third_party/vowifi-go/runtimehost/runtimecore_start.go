@@ -44,8 +44,10 @@ func (req StartRequest) coreRequest() runtimecore.RuntimeStartRequest {
 		Proxy: runtimeCoreProxy(req.Proxy), DNSServer: req.DNSServer,
 		DeliveryStore:     runtimeCoreDeliveryStore(req.DeliveryStore),
 		SubscriptionStore: runtimeCoreSubscriptionRejectionStore(req.DeliveryStore),
+		MWIPolicyStore:    runtimeCoreMWIPolicyStore(req.DeliveryStore),
 		Dispatch:          runtimeCoreDispatcher(req.Dispatch), ShouldRun: req.ShouldRun,
 	}
+	request.SubscriptionRetries = req.SubscriptionRetries
 	if req.BeforeStart != nil {
 		hook := req.BeforeStart
 		request.BeforeSessionStart = func(ctx context.Context, config runtimecore.SessionConfig) error {
